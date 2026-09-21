@@ -5,6 +5,7 @@
 ### Relay 修复
 
 - 修复 action 标记位于已闭合 Markdown 代码引用中时，普通说明回复被误判为工具调用而返回 502；保留真实调用的 JSON、工具白名单及参数校验，参数中的 Markdown 不参与引用扫描。
+- 中继的已有 JSON 序列化重试提示增加解析原因及封套内行列号；不新增日志、配置或重试次数，最终客户端错误保持不变。两次修改记录见 `genai2agent-relay/docs/action-envelope-fixes.zh-CN.md`。
 
 ### 验证记录
 

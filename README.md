@@ -4,6 +4,8 @@
 
 A proxy that connects ShanghaiTech's GenAI platform to Claude Code, Codex CLI and other clients, exposing the Anthropic Messages, OpenAI Chat Completions and OpenAI Responses APIs.
 
+若另行使用 `genai2agent-relay` 文本工具中继：已闭合的单行反引号引用及配对代码围栏中的 action 示例作为正文返回，不执行工具；真实调用必须在引用之外，且仍须通过 JSON 和参数校验。不要用 Markdown 包裹实际调用；未闭合或不支持的引用形式仍按严格规则处理。此规则属于中继，不改变本代理的原生协议适配。
+
 ## 快速开始
 
 ### 1. 安装

@@ -27,12 +27,17 @@ TOOL_CALL_OPEN_MARKERS = (
     DSML_OPEN_PREFIX_ASCII,
 )
 
-ACTION_OR_CODE_RE = re.compile(
+INLINE_CODE_RE = re.compile(r"(?<!`)(?P<ticks>`+)(?!`)[^\n]*?(?<!`)(?P=ticks)(?!`)")
+CODE_QUOTE_RE = re.compile(
     r"^ {0,3}(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^ {0,3}(?P=fence)[ \t]*(?:\n|$)"
-    r"|(?<!`)`+[^\n]*?(?<!`)`+(?!`)"
-    r"|@@ACTION@@|@@ACTION@(?!@)|@@END_ACTION@@",
+    + "|" + INLINE_CODE_RE.pattern,
     re.MULTILINE | re.DOTALL,
 )
+ACTION_OR_CODE_RE = re.compile(
+    CODE_QUOTE_RE.pattern + r"|@@ACTION@@|@@ACTION@(?!@)|@@END_ACTION@@",
+    re.MULTILINE | re.DOTALL,
+)
+CODE_OPEN_RE = re.compile(r"`+|^ {0,3}~{3,}", re.MULTILINE)
 
 DSML_OPEN_TAG_RE = re.compile(r"<\s*[|｜]\s*DSML\s*[|｜]\s*([A-Za-z_][A-Za-z0-9_]*)?\s*>", re.IGNORECASE)
 DSML_CLOSE_TAG_RE = re.compile(r"</\s*[|｜]\s*DSML\s*[|｜]\s*([A-Za-z_][A-Za-z0-9_]*)?\s*>", re.IGNORECASE)
@@ -89,18 +94,25 @@ def strip_dsml_tags(text):
     return DSML_ANY_TAG_RE.sub("", text)
 
 
+def _tool_stream_boundary(text):
+    cursor = 0
+    while cursor < len(text):
+        positions = [text.find(marker, cursor) for marker in TOOL_CALL_OPEN_MARKERS]
+        marker_pos = min((position for position in positions if position >= 0), default=-1)
+        code_open = CODE_OPEN_RE.search(text, cursor)
+        if code_open is None or (marker_pos >= 0 and marker_pos < code_open.start()):
+            return marker_pos, 0
+        quotation = CODE_QUOTE_RE.match(text, code_open.start())
+        if quotation is None:
+            # 在闭合前连同起始反引号保留，不能从引用内的标记开始缓存工具调用。
+            return -1, len(text) - code_open.start()
+        cursor = quotation.end()
+    return -1, 0
+
+
 def find_tool_call_open(text):
-    """返回最早的显式工具调用起点。"""
-    best = -1
-    for marker in TOOL_CALL_OPEN_MARKERS:
-        if marker == ACTION_OPEN_MARKER:
-            match = _find_unquoted_match(re.compile(re.escape(marker)), text)
-            position = match.start() if match else -1
-        else:
-            position = text.find(marker)
-        if position >= 0 and (best < 0 or position < best):
-            best = position
-    return best
+    """返回代码引用外最早的显式工具调用起点。"""
+    return _tool_stream_boundary(text)[0]
 
 
 def action_call_prefix_len(text):
@@ -110,12 +122,10 @@ def action_call_prefix_len(text):
 
 
 def tool_call_prefix_len(text):
-    """返回末尾属于某个工具标记前缀的长度，供流式解析回退（hold back）使用。"""
-    longest = 0
+    """保留末尾未完成的工具标记或代码引用，等待后续流片段。"""
+    longest = _tool_stream_boundary(text)[1]
     for marker in TOOL_CALL_OPEN_MARKERS:
-        length = _tag_prefix_len(text, marker)
-        if length > longest:
-            longest = length
+        longest = max(longest, _tag_prefix_len(text, marker))
     return longest
 
 
@@ -950,17 +960,24 @@ def _extract_action_envelope(content, allowed_tool_names):
                 "arguments": json.dumps(parameters, ensure_ascii=False),
             },
         })
-    return tool_calls, _clean_remaining_text(content[:opening.start()])
+    return tool_calls, content[:opening.start()].strip() or None
 
 def extract_tool_calls(content, allowed_tool_names=None):
     if not isinstance(content, str):
         return None, content
 
-    transform_text = lambda text: normalize_tool_call_tags(strip_think_blocks(text))
-    cleaned = _transform_outside_json_strings(content, transform_text)
-    action_result = _extract_action_envelope(cleaned, allowed_tool_names)
+    # 先识别原始封套，不能先删掉代码引用里的 think/DSML 改变反引号配对。
+    action_result = _extract_action_envelope(content, allowed_tool_names)
     if action_result is not None:
         return action_result
+    code_free = CODE_QUOTE_RE.sub(lambda match: " " * len(match.group()), content)
+    if code_free != content and find_tool_call_open(code_free) < 0 and any(
+        marker in content for marker in TOOL_CALL_OPEN_MARKERS
+    ):
+        return None, content
+
+    transform_text = lambda text: normalize_tool_call_tags(strip_think_blocks(text))
+    cleaned = _transform_outside_json_strings(content, transform_text)
     fence_pattern = re.compile(
         r'```(?:xml|json|plaintext|text)?\s*\n?\s*(<tool_call\b[^>]*>.*?</tool_call>)\s*\n?\s*```',
         re.DOTALL,

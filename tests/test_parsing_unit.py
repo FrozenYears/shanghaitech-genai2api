@@ -743,3 +743,29 @@ def test_extract_action_envelope_ignores_markdown_examples():
 def test_extract_action_envelope_rejects_malformed_delimiter():
     with pytest.raises(ToolCallParseError):
         extract_tool_calls('@@ACTION@{"calls":[]}', allowed_tool_names={"write"})
+
+
+@pytest.mark.parametrize("quoted", [
+    '`<think>保留</think>`, `</tool_call>`, `<|DSML|call>`, `@@ACTION@@`, `@@END_ACTION@@`',
+    '```text\nrevision=2\n<think>保留</think> </tool_call> <|DSML|call> @@ACTION@@ @@END_ACTION@@\n```',
+])
+def test_verified_final_answer_with_marker_examples_is_not_a_tool_call(quoted):
+    content = "Read-back verified. All requested characters were preserved:\n" + quoted
+
+    calls, remaining = extract_tool_calls(content, allowed_tool_names={"write", "edit", "read"})
+
+    assert calls is None
+    assert remaining == content
+
+
+def test_real_action_after_literal_marker_examples_preserves_payload():
+    prefix = '`<think>keep</think>` and `@@ACTION@@` are literal examples.\n'
+    arguments = {"path": "file.txt", "content": "`code` <think>keep</think> @@ACTION@@"}
+    payload = {"calls": [{"operation": "write", "parameters": arguments}]}
+    calls, remaining = extract_tool_calls(
+        prefix + "@@ACTION@@" + json.dumps(payload) + "@@END_ACTION@@",
+        allowed_tool_names={"write"},
+    )
+
+    assert remaining == prefix.strip()
+    assert json.loads(calls[0]["function"]["arguments"]) == arguments

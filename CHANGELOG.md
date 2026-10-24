@@ -8,6 +8,8 @@
 - 对 user/tool-history 中的 `<think>`、tool/DSML 标签及 action 分隔符使用可逆 JSON Unicode 转义，防止模型将文件内容误判为控制语法；解析后恢复原字符串。
 - 真实 ChatGLM 测试发现含 `<think>`、`</tool_call>` 的文件内容被模型改写，但模型仍声称写入成功。转义输入并改用 JSON envelope 后，真实 write → edit → read 回读逐字符匹配通过。普通文本或必需 `tool_choice` 未返回调用时，三种 API 都报错而非报告成功。
 - 拒绝不完整 action envelope、截断／损坏调用及提前结束的上游 SSE，不交付可执行的部分参数。保留 legacy XML/DSML parser compatibility。
+- 针对 deepseek-pro／Kimi-k3 的真实工具任务修复完成说明被误判为调用：在 think/DSML 清理前识别原始封套与 Markdown 引用，流式保留未闭合引用，Anthropic 保留引用中的 think 字面数据；relay 原生语法检查不再扫描引用及合法参数。
+- 明确工具结果是已执行回执和验证后的正常退出条件。新增两模型 8,389 字节流式文件、截断不交付及 edit 失败恢复的实测记录；如实记录 Kimi 首次复制错误后经回读修正和 DeepSeek 额外一次 read 的限制。
 
 ### Relay 修复
 

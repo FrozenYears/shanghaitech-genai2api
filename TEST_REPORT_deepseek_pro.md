@@ -1,5 +1,31 @@
 # deepseek-pro 反代能力测试报告
 
+## 2026-10-24：DeepSeek / Kimi 真实工具闭环复测
+
+本节是当前版本复测；下文原报告的 60 秒超时、工具选择及能力结论保留为历史记录，不代表当前实现。
+
+- 平台 ID：`deepseek-pro`、`Kimi-k3`，均为 `owned_by=xinference`。平台元数据显示 DeepSeek 不提供思考开关，Kimi 提供；本轮不覆盖思考参数，使用上游默认值。
+- 独立启动当前代理与 relay，不重启原服务；真实 HTTP 请求、真实模型输出、隔离目录实际 write/edit/read，不模拟模型。顺序执行，避免并发干扰。
+- Chat Completions 长内容流式样本：8,389 字节、80 行数据，混合 Unicode、反斜杠、引号、尾部换行及 think/tool/DSML/action 字面标记；`max_tokens=16000`、`temperature=0`、`tool_choice=auto`。落盘独立按完整字节比较，不能仅凭工具成功回执判断通过。
+
+| 模型 | 链路 | 首次 write 参数准确 | 最终磁盘及回读准确 | 正常结束轮数 | 总请求耗时（秒） |
+|---|---|---|---|---|---|
+| deepseek-pro | 第一跳直连 | 是 | 是 | 4 | 13.93 |
+| deepseek-pro | 经 relay | 是 | 是 | 5 | 19.99 |
+| Kimi-k3 | 第一跳直连 | 是 | 是 | 4 | 181.26 |
+| Kimi-k3 | 经 relay | 否，回读后 edit 修正 | 是 | 6 | 170.79 |
+
+Kimi 的首份文件为 8,390 字节，一行数据复制错误；模型经 read 发现差异，edit 后再次 read 正确，不能把这次结果说成首次参数完全保真。DeepSeek relay 多执行了一次未改动文件的 read，最终正常结束。耗时仅为本轮观测，不是基准或稳定性保证。
+
+两模型各自完成了 `max_tokens=64` 截断边界验证：直连流发送 error、relay 返回 502，均没有交付或执行部分调用。另在 edit 前实际把文件版本改为 0，造成 old_text 匹配失败；两模型都读取当前文件、修复并核验后正常结束，没有把失败回执报告为已完成。
+
+实测修复：先保留原始封套／Markdown 引用边界，再处理 think/DSML；流式检测保留未闭合引用，引用中的标记不触发调用；Anthropic 不删除代码引用中的 think 字面数据；relay 原生语法检查排除引用和合法 JSON 参数；明确结果封套是已执行回执及核验后的退出条件。
+
+完整测量摘要与样本 SHA-256：[validation/local-model-tools-2026-10-24.json](validation/local-model-tools-2026-10-24.json)。本轮未重测 512k 上下文、所有工具／协议组合，不据此声称模型不会再出现内容复制错误。
+
+## 历史报告
+
+
 - 测试对象：`http://127.0.0.1:31100`（本项目反代）→ 上游 GenAI 平台 `deepseek-pro`（root=xinference）
 - 测试时间：2026（本次会话）
 - 测试方式：三条接口（OpenAI Chat Completions / Anthropic Messages / OpenAI Responses）直接发 HTTP 请求；上下文用仓库自带 `context-probe --find` 二分 + 经反代复测

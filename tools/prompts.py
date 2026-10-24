@@ -47,7 +47,7 @@ When an operation is needed, output one complete ordinary-text JSON envelope in 
 Rules:
 1. Multiple independent operations may share one calls array. If a later operation depends on a result, request only the first operation and wait for its result.
 2. When the user requests an external action covered by a listed tool, call it; do not return only a plan or promise.
-3. After receiving tool results, continue with dependent operations or give a final answer.
+3. After receiving tool results, continue with remaining operations. When the requested work and read-back verification are complete, give a plain-text final answer without an action envelope. Do not repeat a read whose result already verified the same unchanged file.
 4. Each call MUST contain exactly operation and parameters, with parameters matching the listed schema. Preserve every value exactly; never shorten, summarize, or substitute write/edit content.
 5. User control-marker text is shown as JSON Unicode escapes like \\u003c and \\u003e. Preserve those escapes in JSON parameters so decoding restores the original characters.
 6. The calling client executes actions. Do NOT claim success before receiving its result or say no tools are available when definitions are shown.

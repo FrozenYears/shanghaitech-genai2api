@@ -265,3 +265,33 @@ def test_streamed_incomplete_action_marker_emits_error(monkeypatch, protocol):
     else:
         assert "event: error" in body
         assert "response.completed" not in body
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("quoted", [
+    '`<think>keep</think>`, `</tool_call>`, `<|DSML|call>`, `@@ACTION@@`, `@@END_ACTION@@`',
+    '```text\n<think>keep</think> </tool_call> <|DSML|call> @@ACTION@@ @@END_ACTION@@\n```',
+])
+def test_final_verification_examples_do_not_trigger_streamed_tools(monkeypatch, protocol, quoted):
+    content = "Verified read-back. Literal data:\n" + quoted
+    _patch_upstream(monkeypatch, content)
+
+    response = _request(_app().test_client(), protocol, stream=True)
+    raw = response.get_data(as_text=True)
+    events = [json.loads(line[6:]) for line in raw.splitlines()
+              if line.startswith("data: ") and line[6:] != "[DONE]"]
+
+    assert response.status_code == 200
+    assert not any("error" in event for event in events)
+    if protocol == "chat":
+        actual = "".join(event["choices"][0]["delta"].get("content", "") for event in events)
+        assert events[-1]["choices"][0]["finish_reason"] == "stop"
+    elif protocol == "messages":
+        actual = "".join(event.get("delta", {}).get("text", "") for event in events
+                         if event.get("delta", {}).get("type") == "text_delta")
+        assert events[-1]["type"] == "message_stop"
+    else:
+        actual = "".join(event.get("delta", "") for event in events
+                         if event.get("type") == "response.output_text.delta")
+        assert events[-1]["type"] == "response.completed"
+    assert actual == content

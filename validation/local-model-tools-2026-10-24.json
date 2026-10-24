@@ -1,0 +1,38 @@
+{
+  "date": "2026-10-24",
+  "models": ["deepseek-pro", "Kimi-k3"],
+  "scope": "Real GenAI upstream; serial calls via current root proxy on 31200 and relay on 31210; OpenAI Chat Completions; actual isolated UTF-8 write/edit/read executor; original services unchanged",
+  "parameters": {"max_tokens": 16000, "temperature": 0, "tool_choice": "auto", "thinking": "upstream default, not overridden"},
+  "payload": {
+    "bytes": 8389,
+    "lines_of_data": 80,
+    "initial_sha256": "b96cef3b7733e214513ce310cd3e0ee4c46e62dcd12fe72bcd071621b3dea736",
+    "expected_final_sha256": "890ef0c4b530455bebb7d19590ca25ff19728bf694ee0325789040ab84de2519",
+    "literal_samples": ["<think>keep</think>", "</tool_call>", "<|DSML|call>", "@@ACTION@@", "@@END_ACTION@@", "Unicode", "backslashes", "trailing newline"]
+  },
+  "final_streamed_runs": [
+    {"model":"deepseek-pro","route":"direct","first_write_exact":true,"disk_exact":true,"readback_exact":true,"normal_end":true,"turns":4,"calls":["write","edit","read"],"seconds":13.93},
+    {"model":"deepseek-pro","route":"relay","first_write_exact":true,"disk_exact":true,"readback_exact":true,"normal_end":true,"turns":5,"calls":["write","edit","read","read"],"seconds":19.99},
+    {"model":"Kimi-k3","route":"direct","first_write_exact":true,"disk_exact":true,"readback_exact":true,"normal_end":true,"turns":4,"calls":["write","edit","read"],"seconds":181.26},
+    {"model":"Kimi-k3","route":"relay","first_write_exact":false,"disk_exact":true,"readback_exact":true,"normal_end":true,"turns":6,"calls":["write","edit","read","edit","read"],"seconds":170.79,"note":"Initial file was 8390 bytes rather than 8389; a data row was copied incorrectly. Model detected the mismatch through read, corrected via edit, and verified through another read."}
+  ],
+  "truncation_checks": [
+    {"model":"deepseek-pro","route":"direct","stream":true,"max_tokens":64,"http_status":200,"error":"Tool call output was truncated; no tool call was emitted","emitted_calls":0,"executed_calls":0,"seconds":0.59},
+    {"model":"deepseek-pro","route":"relay","stream":true,"max_tokens":64,"http_status":502,"error":"First-hop output was truncated (finish_reason=length); no actions were delivered. Review max_tokens (includes reasoning).","emitted_calls":0,"executed_calls":0,"seconds":0.58},
+    {"model":"Kimi-k3","route":"direct","stream":true,"max_tokens":64,"http_status":200,"error":"Tool call output was truncated; no tool call was emitted","emitted_calls":0,"executed_calls":0,"seconds":4.39},
+    {"model":"Kimi-k3","route":"relay","stream":true,"max_tokens":64,"http_status":502,"error":"First-hop output was truncated (finish_reason=length); no actions were delivered. Review max_tokens (includes reasoning).","emitted_calls":0,"executed_calls":0,"seconds":4.58}
+  ],
+  "concurrent_edit_checks": [
+    {"model":"deepseek-pro","route":"relay","external_change":"revision=1 to revision=0 just before first edit","first_edit_error":"ValueError: edit requires exactly one match; got 0","calls":["write:ok","edit:error","read:ok","edit:ok","read:ok","read:ok"],"disk_exact":true,"readback_exact":true,"normal_end":true},
+    {"model":"Kimi-k3","route":"relay","external_change":"revision=1 to revision=0 just before first edit","first_edit_error":"ValueError: edit requires exactly one match; got 0","calls":["write:ok","edit:error","read:ok","write:ok","edit:ok","read:ok"],"disk_exact":true,"readback_exact":true,"normal_end":true}
+  ],
+  "fixes": [
+    "Parse action envelopes before stripping think or normalizing DSML, preserving Markdown quotation boundaries.",
+    "Hold incomplete Markdown quotations during streaming; markers inside quoted verification text are not executable calls.",
+    "Preserve quoted think literals in Anthropic output while continuing to filter actual unquoted thinking blocks.",
+    "Relay native-syntax checks ignore code quotations and validated action parameters.",
+    "State that tool results are already-executed outcomes and that completed verification should end in plain text."
+  ],
+  "limits": ["Observed results are samples, not a universal reliability guarantee.","Kimi can make semantic copy errors in model-generated parameters; read-back remains necessary.","DeepSeek performed one additional read in the final long relay run.","Latency values are individual observed requests, not benchmarks."],
+  "regression_checks": {"root_passed":108,"relay_passed":39,"relay_subtests_passed":42}
+}

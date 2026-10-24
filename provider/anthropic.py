@@ -8,7 +8,7 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from config import model_registry
 from provider.genai import estimate_messages_tokens, estimate_text_tokens, iter_genai_stream
-from tools.parsing import ACTION_CLOSE_MARKER, ACTION_OPEN_MARKER, ToolCallParseError, action_call_prefix_len, extract_tool_calls, find_tool_call_open, tool_call_prefix_len
+from tools.parsing import CODE_QUOTE_RE, ACTION_CLOSE_MARKER, ACTION_OPEN_MARKER, ToolCallParseError, action_call_prefix_len, extract_tool_calls, find_tool_call_open, tool_call_prefix_len
 from tools.prompts import escape_tool_control_markers, inject_tool_prompt, normalize_content, merge_content, flatten_message_content
 from provider.features import is_web_search_tool
 
@@ -310,6 +310,18 @@ def filter_thinking_text_delta(text: str, state: Dict[str, Any]) -> str:
     return filter_thinking_and_dsml("".join(output))
 
 
+def _filter_thinking_outside_code(text: str, state: Dict[str, Any]) -> str:
+    parts = []
+    cursor = 0
+    for quotation in CODE_QUOTE_RE.finditer(text):
+        parts.append(filter_thinking_text_delta(text[cursor:quotation.start()], state))
+        if not state.get("in_thinking"):
+            parts.append(quotation.group())
+        cursor = quotation.end()
+    parts.append(filter_thinking_text_delta(text[cursor:], state))
+    return "".join(parts)
+
+
 def strip_thinking_markup(text: str) -> str:
     cleaned = re.sub(r"<think\b[^>]*>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
     cleaned = re.sub(r"^\s*</think>\s*", "", cleaned, flags=re.IGNORECASE)
@@ -591,11 +603,7 @@ def stream_genai_as_anthropic(
             ) if position is not None]
             if positions:
                 call_pos = min(positions)
-                prefix = buffer[:min(call_pos, len(buffer))]
-                raw_prefix_end = max(0, call_pos - len(buffer))
-                prefix += filter_thinking_text_delta(
-                    raw_content[:raw_prefix_end], thinking_state
-                )
+                prefix = _filter_thinking_outside_code(candidate[:call_pos], thinking_state)
                 if thinking_index is not None:
                     yield from close_thinking_block()
                 yield from emit_text(prefix)
@@ -604,25 +612,20 @@ def stream_genai_as_anthropic(
                 buffer = ""
                 continue
 
-            content = filter_thinking_text_delta(raw_content, thinking_state)
-            if not content:
-                continue
-
-            if thinking_index is not None:
-                yield from close_thinking_block()
-
-            buffer += content
-
+            buffer = candidate
             if allowed_tool_names and text_index is None and buffer.lstrip().startswith("{"):
                 continue
 
             prefix_len = tool_call_prefix_len(buffer)
             if prefix_len > 0:
-                yield from emit_text(buffer[:-prefix_len])
-                buffer = buffer[-prefix_len:]
+                safe, buffer = buffer[:-prefix_len], buffer[-prefix_len:]
             else:
-                yield from emit_text(buffer)
-                buffer = ""
+                safe, buffer = buffer, ""
+            content = _filter_thinking_outside_code(safe, thinking_state)
+            if content:
+                if thinking_index is not None:
+                    yield from close_thinking_block()
+                yield from emit_text(content)
             continue
 
         # done：先冲刷残留文本，再输出工具调用
@@ -704,7 +707,7 @@ def stream_genai_as_anthropic(
                     "error": {"type": "api_error", "message": "Required tool call was not returned; no action was emitted"},
                 })
                 return
-            yield from emit_text(buffer)
+            yield from emit_text(_filter_thinking_outside_code(buffer, thinking_state))
 
         yield from close_thinking_block()
         yield from close_text_block()

@@ -6,7 +6,7 @@ from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from provider.anthropic import parse_tool_arguments
 from provider.genai import estimate_text_tokens, iter_genai_stream, split_history_messages
-from tools.parsing import extract_tool_calls, find_tool_call_open, tool_call_prefix_len
+from tools.parsing import ToolCallParseError, extract_tool_calls, find_tool_call_open, tool_call_prefix_len
 from tools.prompts import flatten_message_content, inject_tool_prompt, normalize_content, merge_content
 
 logger = logging.getLogger(__name__)
@@ -559,15 +559,25 @@ def stream_genai_as_responses(
                 buffer = ""
             continue
 
-        # done
+        if tool_detected and event.get("finish_reason") == "length":
+            yield ev("error", {
+                "code": None,
+                "message": "Tool call output was truncated; no tool call was emitted",
+                "param": None,
+            })
+            return
         yield from finish_reasoning()
 
         if tool_detected:
             tool_buffer += buffer
             buffer = ""
-            tool_calls, remaining = extract_tool_calls(
-                tool_buffer, allowed_tool_names=allowed_tool_names
-            )
+            try:
+                tool_calls, remaining = extract_tool_calls(
+                    tool_buffer, allowed_tool_names=allowed_tool_names
+                )
+            except ToolCallParseError as exc:
+                yield ev("error", {"code": None, "message": str(exc), "param": None})
+                return
             if tool_calls:
                 if remaining:
                     if message_item_id is None:

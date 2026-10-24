@@ -8,7 +8,7 @@ from flask import Blueprint, current_app, request, jsonify, stream_with_context,
 from errors import UpstreamError, openai_error
 from provider.features import prepare_request
 from tools.prompts import inject_tool_prompt
-from tools.parsing import extract_tool_calls
+from tools.parsing import ToolCallParseError, extract_tool_calls
 from provider.genai import (
     collect_genai_response,
     convert_messages_to_genai_format,
@@ -107,6 +107,12 @@ def chat_completions():
             else:
                 tool_calls, remaining_text = None, complete_content
 
+            if tool_calls and finish_reason == "length":
+                return openai_error(
+                    "Tool call output was truncated; no tool call was emitted",
+                    error_type="upstream_error",
+                    status=502,
+                )
             if tool_calls:
                 message_obj = {
                     "role": "assistant",
@@ -144,6 +150,8 @@ def chat_completions():
             }
             return jsonify(response)
 
+    except ToolCallParseError as e:
+        return openai_error(str(e), error_type="upstream_error", status=502)
     except ValueError as e:
         return openai_error(str(e), error_type="invalid_request_error", status=400)
     except UpstreamError as e:

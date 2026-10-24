@@ -40,6 +40,9 @@ class FakeResponse:
         for chunk in chunks:
             yield ("data: " + json.dumps(chunk)).encode()
 
+    def close(self):
+        pass
+
 
 def make_app(api_key=None):
     return create_app(
@@ -114,6 +117,9 @@ def test_non_streaming_messages_route_returns_thinking_block(monkeypatch):
             ]
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
+
+        def close(self):
+            pass
 
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
     monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: FakeResponse())

@@ -6,6 +6,12 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
+
+class ToolCallParseError(ValueError):
+    """工具调用正文不完整或无法无损解析。"""
+
+
+
 # 部分上游模型会自行输出 GenAI 原生的 DSML 工具标记，而不是代理注入的
 # <tool_call> 格式；同一模型还可能把标签写成 call / _call 等变体。
 # 这里把所有以 call 结尾的 DSML 标签归一化成 <tool_call>，让解析器与流式检测统一处理。
@@ -228,36 +234,7 @@ def _load_relaxed_json(raw):
         except (ValueError, SyntaxError):
             pass
 
-    if not stripped.startswith("{"):
-        return None
-
-    depth = 0
-    in_string = False
-    escape = False
-    for ch in stripped:
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-
-        if ch == '"':
-            in_string = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth = max(depth - 1, 0)
-
-    if depth <= 0:
-        return None
-
-    try:
-        return json.loads(stripped + ("}" * depth))
-    except (json.JSONDecodeError, ValueError):
-        return None
+    return None
 
 
 def _clean_arg_value(value):
@@ -832,90 +809,178 @@ def _coerce_tool_arguments(tool_name, arguments):
     return {"arguments": arguments}
 
 
-def extract_tool_calls(content, allowed_tool_names=None):
-    cleaned = normalize_tool_call_tags(strip_think_blocks(content))
+def _transform_outside_json_strings(text, transform):
+    parts = []
+    start = 0
+    in_string = False
+    escape = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+                parts.append(text[start:index + 1])
+                start = index + 1
+        elif char == '"':
+            parts.append(transform(text[start:index]))
+            parts.append(char)
+            start = index + 1
+            in_string = True
+    parts.append(text[start:] if in_string else transform(text[start:]))
+    return "".join(parts)
 
-    cleaned = re.sub(
+
+def _find_unquoted_match(pattern, text, start=0):
+    in_string = False
+    escape = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == "<":
+            match = pattern.match(text, index)
+            if match:
+                return match
+    return None
+
+
+def _find_tool_call_end(text, start):
+    close_pattern = re.compile(r"</tool_call\s*>", re.IGNORECASE)
+    open_pattern = re.compile(r"<tool_call\b[^>]*>", re.IGNORECASE)
+    in_string = False
+    escape = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == "<":
+            close = close_pattern.match(text, index)
+            if close:
+                return index, close.end(), True
+            next_open = open_pattern.match(text, index)
+            if next_open:
+                return index, index, False
+    next_open = open_pattern.search(text, start)
+    if next_open:
+        return next_open.start(), next_open.start(), False
+    return len(text), len(text), False
+
+
+def extract_tool_calls(content, allowed_tool_names=None):
+    if not isinstance(content, str):
+        return None, content
+
+    transform_text = lambda text: normalize_tool_call_tags(strip_think_blocks(text))
+    cleaned = _transform_outside_json_strings(content, transform_text)
+    fence_pattern = re.compile(
         r'```(?:xml|json|plaintext|text)?\s*\n?\s*(<tool_call\b[^>]*>.*?</tool_call>)\s*\n?\s*```',
-        r'\1',
+        re.DOTALL,
+    )
+    cleaned = _transform_outside_json_strings(
         cleaned,
-        flags=re.DOTALL
+        lambda text: fence_pattern.sub(r"\1", text),
     )
 
-    match_pattern = re.compile(r'<tool_call\b([^>]*)>\s*(.*?)\s*</tool_call>', re.DOTALL)
-    open_pattern = re.compile(r'<tool_call\b([^>]*)>', re.DOTALL)
-    matches = list(match_pattern.finditer(cleaned))
-    remaining = None
-
-    if not matches and '<tool_call' in cleaned:
-        openings = list(open_pattern.finditer(cleaned))
-        if openings:
-            remaining = cleaned[:openings[0].start()].strip()
-            matches = []
-            for index, opening in enumerate(openings):
-                end = openings[index + 1].start() if index + 1 < len(openings) else len(cleaned)
-                body = cleaned[opening.end():end].strip()
-                if not body:
-                    continue
-                matches.append((opening.group(1), body))
-
-    if not matches:
-        fallback_tool_calls, fallback_remaining = _run_fallback_extractors(
-            cleaned,
-            allowed_tool_names,
-        )
-        if fallback_tool_calls:
-            return fallback_tool_calls, fallback_remaining
-
-        logger.debug("No <tool_call> tags found in content (%d chars): %s",
-                     len(content), content[:500])
-        if "DSML" in content:
-            return None, _clean_remaining_text(cleaned) or ""
-        return None, content
-
-    logger.debug("Found %d <tool_call> match(es)", len(matches))
-
+    open_pattern = re.compile(r"<tool_call\b([^>]*)>", re.IGNORECASE)
+    cursor = 0
+    spans = []
     tool_calls = []
-    for i, match in enumerate(matches):
-        if isinstance(match, tuple):
-            attrs, body = match
-        else:
-            attrs, body = match.group(1), match.group(2)
-        tool_name = _extract_tool_name_from_attrs(attrs)
-        call = _parse_tool_call_body(body, tool_name=tool_name)
-        if call:
-            if allowed_tool_names and call["name"] not in allowed_tool_names:
-                logger.warning("Skipping disallowed tool_call[%d] name=%s", i, call["name"])
-                continue
-            tool_calls.append({
-                "id": f"call_{uuid.uuid4().hex[:24]}",
-                "type": "function",
-                "function": {
-                    "name": call["name"],
-                    "arguments": json.dumps(
-                        _coerce_tool_arguments(call["name"], call.get("arguments", {})),
-                        ensure_ascii=False,
-                    )
-                }
-            })
-        else:
-            logger.warning("Failed to parse tool_call[%d] — raw: %s", i, body[:300])
+    index = 0
+    parse_failed = False
+    invalid_tool_body = False
+    while True:
+        opening = _find_unquoted_match(open_pattern, cleaned, cursor)
+        if not opening:
+            break
+        body_start = opening.end()
+        body_end, span_end, closed = _find_tool_call_end(cleaned, body_start)
+        body = cleaned[body_start:body_end].strip()
+        spans.append((opening.start(), span_end))
+        cursor = span_end
+        if not body:
+            if closed:
+                raise ToolCallParseError("Tool call body is empty")
             continue
 
-    if not tool_calls:
-        fallback_tool_calls, fallback_remaining = _run_fallback_extractors(
-            cleaned,
-            allowed_tool_names,
-        )
+        if body.lstrip().startswith("{"):
+            parsed_body = _load_relaxed_json(body)
+            if parsed_body is None and (not closed or body.count("{") > body.count("}")):
+                raise ToolCallParseError("Tool call JSON is incomplete")
+        tool_name = _extract_tool_name_from_attrs(opening.group(1))
+        call = _parse_tool_call_body(body, tool_name=tool_name)
+        if not call:
+            parse_failed = True
+            invalid_tool_body = invalid_tool_body or bool(
+                tool_name
+                or re.search(r'"(?:name|arguments)"\s*:|<arg_key>|<argument>', body, re.IGNORECASE)
+            )
+            index += 1
+            continue
+        if allowed_tool_names and call["name"] not in allowed_tool_names:
+            logger.warning("Skipping disallowed tool_call[%d] name=%s", index, call["name"])
+            index += 1
+            continue
+        tool_calls.append({
+            "id": f"call_{uuid.uuid4().hex[:24]}",
+            "type": "function",
+            "function": {
+                "name": call["name"],
+                "arguments": json.dumps(
+                    _coerce_tool_arguments(call["name"], call.get("arguments", {})),
+                    ensure_ascii=False,
+                ),
+            },
+        })
+        index += 1
+    if invalid_tool_body:
+        raise ToolCallParseError("Tool call is incomplete or its arguments could not be parsed")
+
+    partial_open_pattern = re.compile(r"<tool_call\b(?![^>]*>)", re.IGNORECASE)
+    partial_call = tool_call_prefix_len(cleaned) > 0 or bool(
+        _find_unquoted_match(partial_open_pattern, cleaned)
+    )
+    if partial_call:
+        raise ToolCallParseError("Tool call marker is incomplete")
+    if not spans or parse_failed:
+        fallback_tool_calls, fallback_remaining = _run_fallback_extractors(cleaned, allowed_tool_names)
+        if fallback_tool_calls and parse_failed and tool_calls:
+            raise ToolCallParseError("Tool call batch contains an incomplete call")
         if fallback_tool_calls:
             return fallback_tool_calls, fallback_remaining
-        if "DSML" in content:
-            return None, _clean_remaining_text(cleaned) or ""
+        if parse_failed:
+            raise ToolCallParseError("Tool call is incomplete or its arguments could not be parsed")
+    if not spans:
         return None, content
 
-    if remaining is None:
-        remaining = match_pattern.sub('', cleaned).strip()
-    return tool_calls, _clean_remaining_text(remaining)
+    remaining_parts = []
+    position = 0
+    for start, end in spans:
+        remaining_parts.append(cleaned[position:start])
+        position = max(position, end)
+    remaining_parts.append(cleaned[position:])
+    if tool_call_prefix_len(cleaned[position:]) > 0 or _find_unquoted_match(
+        partial_open_pattern, cleaned, position
+    ):
+        raise ToolCallParseError("Tool call batch ends with an incomplete marker")
+    remaining = _clean_remaining_text("".join(remaining_parts))
+    return (tool_calls or None), remaining
 
 
 def _tag_prefix_len(text, tag):

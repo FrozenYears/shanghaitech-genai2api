@@ -8,7 +8,7 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from config import model_registry
 from provider.genai import estimate_messages_tokens, estimate_text_tokens, iter_genai_stream
-from tools.parsing import extract_tool_calls, find_tool_call_open, tool_call_prefix_len
+from tools.parsing import ToolCallParseError, extract_tool_calls, find_tool_call_open, tool_call_prefix_len
 from tools.prompts import inject_tool_prompt, normalize_content, merge_content, flatten_message_content
 from provider.features import is_web_search_tool
 
@@ -358,6 +358,11 @@ def quote_unquoted_json_keys(text: str) -> str:
 
 
 def parse_json_like_object(arguments: str) -> Optional[Any]:
+    try:
+        return json.loads(arguments)
+    except json.JSONDecodeError:
+        pass
+
     candidates = []
     cleaned = strip_markdown_json_fence(strip_thinking_markup(arguments))
     if cleaned:
@@ -564,35 +569,44 @@ def stream_genai_as_anthropic(
                     "delta": {"type": "thinking_delta", "thinking": reasoning},
                 })
 
-            content = event.get("content")
-            if content:
-                content = filter_thinking_text_delta(content, thinking_state)
+            raw_content = event.get("content")
+            if not raw_content:
+                continue
+
+            if tool_detected:
+                tool_buffer += raw_content
+                continue
+
+            candidate = buffer + raw_content
+            tag_pos = find_tool_call_open(candidate)
+            bare_tool_match = BARE_TOOL_CALL_RE.search(candidate) if allowed_tool_names else None
+            positions = [position for position in (
+                tag_pos if tag_pos >= 0 else None,
+                bare_tool_match.start() if bare_tool_match else None,
+            ) if position is not None]
+            if positions:
+                call_pos = min(positions)
+                prefix = buffer[:min(call_pos, len(buffer))]
+                raw_prefix_end = max(0, call_pos - len(buffer))
+                prefix += filter_thinking_text_delta(
+                    raw_content[:raw_prefix_end], thinking_state
+                )
+                if thinking_index is not None:
+                    yield from close_thinking_block()
+                yield from emit_text(prefix)
+                tool_detected = True
+                tool_buffer = candidate[call_pos:]
+                buffer = ""
+                continue
+
+            content = filter_thinking_text_delta(raw_content, thinking_state)
             if not content:
                 continue
 
             if thinking_index is not None:
                 yield from close_thinking_block()
 
-            if tool_detected:
-                tool_buffer += content
-                continue
-
             buffer += content
-            tag_pos = find_tool_call_open(buffer)
-            if tag_pos >= 0:
-                yield from emit_text(buffer[:tag_pos])
-                tool_detected = True
-                tool_buffer = buffer[tag_pos:]
-                buffer = ""
-                continue
-
-            bare_tool_match = BARE_TOOL_CALL_RE.search(buffer) if allowed_tool_names else None
-            if bare_tool_match:
-                yield from emit_text(buffer[:bare_tool_match.start()])
-                tool_detected = True
-                tool_buffer = buffer[bare_tool_match.start():]
-                buffer = ""
-                continue
 
             if allowed_tool_names and text_index is None and buffer.lstrip().startswith("{"):
                 continue
@@ -608,13 +622,26 @@ def stream_genai_as_anthropic(
 
         # done：先冲刷残留文本，再输出工具调用
         stop_reason = "max_tokens" if event.get("finish_reason") == "length" else "end_turn"
+        if tool_detected and event.get("finish_reason") == "length":
+            yield write_sse("error", {
+                "type": "error",
+                "error": {"type": "api_error", "message": "Tool call output was truncated; no tool call was emitted"},
+            })
+            return
         if tool_detected:
             tool_buffer += buffer
             buffer = ""
-            tool_calls, remaining = extract_tool_calls(
-                tool_buffer,
-                allowed_tool_names=allowed_tool_names,
-            )
+            try:
+                tool_calls, remaining = extract_tool_calls(
+                    tool_buffer,
+                    allowed_tool_names=allowed_tool_names,
+                )
+            except ToolCallParseError as exc:
+                yield write_sse("error", {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": str(exc)},
+                })
+                return
             if tool_calls:
                 if remaining:
                     yield from emit_text(remaining)

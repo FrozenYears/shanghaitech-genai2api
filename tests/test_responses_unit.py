@@ -35,6 +35,9 @@ def _fake_response(chunks):
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
 
+        def close(self):
+            pass
+
     return FakeResponse()
 
 

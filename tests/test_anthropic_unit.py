@@ -73,9 +73,13 @@ def test_anthropic_messages_convert_tool_history_to_genai_promptable_messages():
 
     assert model == "GPT-5.5"
     assert anthropic_allowed_tool_names(body) == {"read_file"}
-    assert messages[0]["role"] == "system"
-    assert "<tools>" in messages[0]["content"]
-    assert "read_file" in messages[0]["content"]
+    assert messages[0]["content"] == "You are Claude Code."
+    assert any(
+        message["role"] == "user"
+        and "<tools>" in message["content"]
+        and "<name>read_file</name>" in message["content"]
+        for message in messages
+    )
     assert any(
         message["role"] == "assistant"
         and "<tool_call>" in message["content"]
@@ -115,6 +119,9 @@ def test_stream_genai_as_anthropic_emits_tool_use_blocks(monkeypatch):
             ]
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
+
+        def close(self):
+            pass
 
     class DummyTokenManager:
         def force_refresh(self):
@@ -178,6 +185,9 @@ def test_stream_genai_as_anthropic_emits_bare_malformed_json_tool_use(monkeypatc
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
 
+        def close(self):
+            pass
+
     class DummyTokenManager:
         def force_refresh(self):
             return None
@@ -228,6 +238,9 @@ def test_stream_genai_as_anthropic_filters_split_thinking_blocks(monkeypatch):
             ]
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
+
+        def close(self):
+            pass
 
     class DummyTokenManager:
         def force_refresh(self):
@@ -290,6 +303,9 @@ def _dummy_config_with_upstream(monkeypatch, chunks):
         def iter_lines(self):
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
+
+        def close(self):
+            pass
 
     class DummyTokenManager:
         def force_refresh(self):

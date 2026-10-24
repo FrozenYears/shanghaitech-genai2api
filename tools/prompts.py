@@ -21,9 +21,10 @@ Rules:
 1. You can call multiple tools by using multiple <tool_call> blocks.
 2. If you don't need any tool, just respond normally in plain text without any <tool_call> tags.
 3. After receiving tool results, analyze them and either call more tools or give a final answer in plain text.
-4. The "arguments" field MUST be a valid JSON object matching the tool's parameter schema.
-5. NEVER use <arg_key>, <arg_value>, dotted names like Grep.datasource, or a bare tool name.
-6. NEVER wrap <tool_call> in markdown code blocks like ```xml or ```json."""
+4. The "arguments" field MUST be a valid JSON object matching the tool's parameter schema. Preserve every argument value exactly; never shorten or summarize write/edit content.
+5. The calling client executes requested tools and returns their results. Do NOT claim a tool ran or succeeded before receiving its result; do not say no tools are available when definitions are shown.
+6. NEVER use <arg_key>, <arg_value>, dotted names like Grep.datasource, or a bare tool name.
+7. NEVER wrap <tool_call> in markdown code blocks like ```xml or ```json."""
 
 TOOL_CHOICE_REQUIRED_PROMPT = "\nYou MUST call at least one tool in your response. Do NOT respond with plain text only."
 TOOL_CHOICE_SPECIFIC_PROMPT = (
@@ -195,20 +196,12 @@ def inject_tool_prompt(messages, tools, tool_choice=None):
         tool_prompt += TOOL_CHOICE_SPECIFIC_PROMPT.format(name=name)
 
     new_messages = []
-    has_system = False
-
     for msg in messages:
         role = msg.get("role")
 
         if role == "system":
             system_content = flatten_message_content(msg.get("content", ""))
-            new_messages.append(
-                {
-                    "role": "system",
-                    "content": system_content + "\n\n" + tool_prompt,
-                }
-            )
-            has_system = True
+            new_messages.append({"role": "system", "content": system_content})
 
         elif role == "tool":
             tool_call_id = msg.get("tool_call_id", "unknown")
@@ -240,7 +233,13 @@ def inject_tool_prompt(messages, tools, tool_choice=None):
         else:
             new_messages.append(normalize_message_content(msg))
 
-    if not has_system:
+    for index in range(len(new_messages) - 1, -1, -1):
+        if new_messages[index].get("role") == "user":
+            new_messages[index]["content"] = merge_content(
+                new_messages[index].get("content", ""), tool_prompt
+            )
+            break
+    else:
         new_messages.insert(0, {"role": "system", "content": tool_prompt})
 
     return new_messages

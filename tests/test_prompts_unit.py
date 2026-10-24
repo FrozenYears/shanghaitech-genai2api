@@ -44,13 +44,11 @@ def test_inject_tool_prompt_accepts_block_content():
 
     result = inject_tool_prompt(messages, TOOLS)
 
-    assert result[0]["role"] == "system"
-    assert isinstance(result[0]["content"], str)
-    assert "System instructions" in result[0]["content"]
-    assert "Second line" in result[0]["content"]
-    assert "<tools>" in result[0]["content"]
+    assert result[0] == {"role": "system", "content": "System instructions\nSecond line"}
     assert result[1]["role"] == "user"
-    assert result[1]["content"] == "Hello"
+    user_text = flatten_message_content(result[1]["content"])
+    assert "Hello" in user_text
+    assert "<tools>" in user_text
 
 
 def test_inject_tool_prompt_includes_claude_code_tool_examples():
@@ -67,9 +65,41 @@ def test_inject_tool_prompt_includes_claude_code_tool_examples():
 
     result = inject_tool_prompt([{"role": "user", "content": "search"}], tools)
 
-    assert '"name": "Grep"' in result[0]["content"]
-    assert '"pattern": "search text"' in result[0]["content"]
-    assert "NEVER use <arg_key>" in result[0]["content"]
+    user_text = flatten_message_content(result[0]["content"])
+    assert '"name": "Grep"' in user_text
+    assert '"pattern": "search text"' in user_text
+    assert "NEVER use <arg_key>" in user_text
+
+
+def test_tool_prompt_is_attached_to_current_user_without_losing_context_or_attachments():
+    messages = [
+        {"role": "system", "content": "Original system instruction"},
+        {"role": "developer", "content": "Developer constraints"},
+        {"role": "user", "content": "Older turn"},
+        {"role": "assistant", "content": "Previous tool finished"},
+        {"role": "tool", "tool_call_id": "call-old", "content": "previous result"},
+        {"role": "user", "content": [
+            {"type": "text", "text": "Edit the attached file"},
+            {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}},
+        ]},
+    ]
+
+    result = inject_tool_prompt(messages, TOOLS)
+
+    assert result[0] == {"role": "system", "content": "Original system instruction"}
+    assert result[1] == messages[1]
+    assert result[2] == messages[2]
+    assert "previous result" in flatten_message_content(result[4]["content"])
+    latest = result[-1]
+    assert latest["role"] == "user"
+    assert any(
+        part.get("image_url", {}).get("url") == "https://example.test/image.png"
+        for part in latest["content"]
+    )
+    latest_text = flatten_message_content(latest["content"])
+    assert "Edit the attached file" in latest_text
+    assert "<name>echo</name>" in latest_text
+    assert "Developer constraints" not in latest_text
 
 
 def test_format_tool_examples_omits_unknown_tools():

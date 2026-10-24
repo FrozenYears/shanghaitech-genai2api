@@ -1,6 +1,8 @@
 import json
 
-from tools.parsing import extract_tool_calls
+import pytest
+
+from tools.parsing import ToolCallParseError, extract_tool_calls
 
 
 def test_extract_tool_calls_parses_arg_key_value_blocks():
@@ -348,27 +350,49 @@ M src/app/components/SnapshotDialog.tsx
     ]
 
 
-def test_extract_tool_calls_parses_truncated_json_tool_object():
-    content = """
-<tool_call>
-{"name": "Bash", "arguments": {"command": "git log --oneline -20", "description": "Show recent commit history"}
-</tool_call>
-"""
+def test_extract_tool_calls_rejects_truncated_json_tool_object():
+    content = (
+        '<tool_call>{"name": "Bash", "arguments": '
+        '{"command": "git log --oneline -20", '
+        '"description": "Show recent commit history"}</tool_call>'
+    )
 
-    tool_calls, remaining = extract_tool_calls(content)
+    with pytest.raises(ToolCallParseError):
+        extract_tool_calls(content, allowed_tool_names={"Bash"})
+def test_extract_tool_calls_preserves_tag_like_write_content():
+    content = "before </tool_call><think>keep</think> <|DSML|call> literal"
+    call = {
+        "name": "write",
+        "arguments": {"path": "notes.md", "content": content},
+    }
+
+    tool_calls, remaining = extract_tool_calls(
+        "<tool_call>" + json.dumps(call, ensure_ascii=False) + "</tool_call>",
+        allowed_tool_names={"write"},
+    )
 
     assert remaining is None
-    assert tool_calls == [
-        {
-            "id": tool_calls[0]["id"],
-            "type": "function",
-            "function": {
-                "name": "Bash",
-                "arguments": '{"command": "git log --oneline -20", "description": "Show recent commit history"}',
-            },
-        }
+    assert json.loads(tool_calls[0]["function"]["arguments"]) == call["arguments"]
+
+
+def test_extract_tool_calls_preserves_multiple_edit_payloads_and_rejects_partial_batch():
+    first = {"name": "edit", "arguments": {"path": "a.txt", "old": "x", "new": "雪\\n\\\"ok\\\""}}
+    second = {"name": "write", "arguments": {"path": "b.txt", "content": "tail <think>value</think>"}}
+    content = "".join(
+        "<tool_call>" + json.dumps(call, ensure_ascii=False) + "</tool_call>"
+        for call in (first, second)
+    )
+
+    tool_calls, _ = extract_tool_calls(content, allowed_tool_names={"edit", "write"})
+    assert [json.loads(call["function"]["arguments"]) for call in tool_calls] == [
+        first["arguments"], second["arguments"]
     ]
 
+    partial = content[:content.rfind("<tool_call>")] + (
+        '<tool_call>{"name":"write","arguments":{"path":"b.txt","content":"tail'
+    )
+    with pytest.raises(ToolCallParseError):
+        extract_tool_calls(partial, allowed_tool_names={"edit", "write"})
 
 def test_extract_tool_calls_parses_argument_tag_for_bash_name_attribute():
     content = """
@@ -684,3 +708,8 @@ def test_extract_tool_calls_maps_bash_string_arguments_to_command():
     assert remaining is None
     assert tool_calls[0]["function"]["name"] == "Bash"
     assert json.loads(tool_calls[0]["function"]["arguments"]) == {"command": "pwd"}
+
+
+def test_extract_tool_calls_rejects_an_incomplete_opening_marker():
+    with pytest.raises(ToolCallParseError):
+        extract_tool_calls('<tool_call{"name":"write","arguments":{"path":"a"}')

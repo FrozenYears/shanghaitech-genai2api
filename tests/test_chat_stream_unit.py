@@ -25,6 +25,8 @@ def _fake_response(chunks):
         def iter_lines(self):
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
+        def close(self):
+            pass
 
     return FakeResponse()
 
@@ -117,3 +119,25 @@ def test_extract_tool_calls_maps_bare_bash_string_to_command():
         allowed_tool_names={"Bash"},
     )
     assert json.loads(tool_calls[0]["function"]["arguments"]) == {"command": "pwd"}
+
+
+def test_upstream_stream_without_finish_or_done_is_an_error(monkeypatch):
+    class IncompleteResponse:
+        status_code = 200
+        text = ""
+
+        def iter_lines(self):
+            yield ("data: " + json.dumps({
+                "choices": [{"delta": {"content": "partial"}, "finish_reason": None}]
+            })).encode()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
+    monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: IncompleteResponse())
+
+    events = list(genai.iter_genai_stream("question", [], "chatglm", 100, DummyConfig()))
+
+    assert [event["type"] for event in events] == ["delta", "error"]
+    assert events[-1]["message"] == "Upstream stream ended before completion"

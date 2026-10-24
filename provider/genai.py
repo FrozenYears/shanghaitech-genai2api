@@ -10,7 +10,7 @@ import requests
 from config import GENAI_URL, build_genai_headers, model_registry
 from errors import UpstreamError, make_error_chunk
 from provider.features import search_sources
-from tools.parsing import extract_tool_calls, find_tool_call_open, tool_call_prefix_len
+from tools.parsing import ToolCallParseError, extract_tool_calls, find_tool_call_open, tool_call_prefix_len
 from tools.prompts import flatten_message_content, normalize_message_content
 
 logger = logging.getLogger(__name__)
@@ -152,6 +152,7 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
         finish_reason = None
         emitted_tokens = 0
         truncated = False
+        stream_ended = False
         for line in response.iter_lines():
             if not line:
                 continue
@@ -161,8 +162,9 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
             if not line_str:
                 continue
 
-            # SSE 结束标记，正常收尾；其后的用量信息不再需要。
             if line_str in ("[DONE]", "data:[DONE]", "data: [DONE]"):
+                stream_ended = True
+                finish_reason = finish_reason or "stop"
                 break
 
             # SSE 注释行（": keep-alive"）与其它字段行不是数据，跳过。
@@ -212,12 +214,17 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
                 # 上游不执行 maxToken，长度上限只能在本地按估算 token 强制生效。
                 if max_tokens and emitted_tokens >= max_tokens:
                     truncated = True
+                    stream_ended = True
                     break
 
             if choices[0].get("finish_reason") is not None:
                 finish_reason = choices[0].get("finish_reason")
+                stream_ended = True
                 break
 
+        if not stream_ended:
+            yield {"type": "error", "message": "Upstream stream ended before completion"}
+            return
         if genai_data.get("netGo") and not truncated:
             try:
                 sources = search_sources(genai_data, token)
@@ -428,12 +435,19 @@ def stream_genai_response_with_tools(
             continue
 
         # done：先冲刷残留文本，再输出工具调用
+        if tool_detected and event.get("finish_reason") == "length":
+            yield make_error_chunk("Tool call output was truncated; no tool call was emitted")
+            return
+
         if tool_detected:
             tool_buffer += buffer
-            buffer = ""
-            tool_calls, remaining = extract_tool_calls(
-                tool_buffer, allowed_tool_names=allowed_tool_names
-            )
+            try:
+                tool_calls, remaining = extract_tool_calls(
+                    tool_buffer, allowed_tool_names=allowed_tool_names
+                )
+            except ToolCallParseError as exc:
+                yield make_error_chunk(str(exc))
+                return
 
             if tool_calls:
                 logger.debug("Streaming tool calling: detected %d tool_call(s)", len(tool_calls))

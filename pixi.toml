@@ -9,7 +9,7 @@ readme = "README.md"
 
 [tasks]
 serve = "python main.py"
-test = "pytest"
+test = "pytest tests"
 context-probe = "python tools/context_probe.py"
 bench-speed = "python tools/bench_speed.py"
 

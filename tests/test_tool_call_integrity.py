@@ -92,13 +92,21 @@ def _action_call(name, arguments):
     return "@@ACTION@@" + json.dumps(payload, ensure_ascii=False) + "@@END_ACTION@@"
 
 
+def _native_call(name, arguments):
+    content = '<|open|>tools<|sep|>' + f'<|open|>call tool="{name}" index="1"<|sep|>'
+    for key, value in arguments.items():
+        content += f'<|open|>argument key="{key}" type="string"<|sep|>{value}<|close|>argument<|sep|>'
+    return content + '<|close|>call<|sep|><|close|>tools<|sep|>'
+
+
 @pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
-def test_tool_arguments_preserve_markup_and_escaped_unicode(monkeypatch, protocol):
+@pytest.mark.parametrize("wire", [_action_call, _native_call])
+def test_tool_arguments_preserve_markup_and_escaped_unicode(monkeypatch, protocol, wire):
     arguments = {
         "path": "notes/雪.txt",
         "content": 'before <think>keep exactly</think> </tool_call> <|DSML|call>\nquote: "keep"',
     }
-    _patch_upstream(monkeypatch, _action_call("write", arguments))
+    _patch_upstream(monkeypatch, wire("write", arguments))
 
     response = _request(_app().test_client(), protocol)
 
@@ -118,12 +126,13 @@ def test_tool_arguments_preserve_markup_and_escaped_unicode(monkeypatch, protoco
 
 
 @pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
-def test_streamed_tool_arguments_preserve_markup_and_escaped_unicode(monkeypatch, protocol):
+@pytest.mark.parametrize("wire", [_action_call, _native_call])
+def test_streamed_tool_arguments_preserve_markup_and_escaped_unicode(monkeypatch, protocol, wire):
     arguments = {
         "path": "notes/雪.txt",
         "content": 'before <think>keep exactly</think> </tool_call> <|DSML|call>\nquote: "keep"',
     }
-    _patch_upstream(monkeypatch, _action_call("write", arguments))
+    _patch_upstream(monkeypatch, wire("write", arguments))
 
     response = _request(_app().test_client(), protocol, stream=True)
     body = response.get_data(as_text=True)
@@ -168,7 +177,7 @@ def test_streamed_tool_arguments_preserve_markup_and_escaped_unicode(monkeypatch
 
 
 @pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
-@pytest.mark.parametrize("failure", ["length", "invalid-json", "malformed-action"])
+@pytest.mark.parametrize("failure", ["length", "invalid-json", "malformed-action", "malformed-native"])
 def test_tool_call_failure_never_returns_success_or_executable_partial_call(
     monkeypatch, protocol, failure
 ):
@@ -179,6 +188,9 @@ def test_tool_call_failure_never_returns_success_or_executable_partial_call(
     elif failure == "malformed-action":
         finish_reason = "stop"
         content = '@@ACTION@@{"calls":[{"operation":"write","parameters":{"path":"notes.txt"}}]'
+    elif failure == "malformed-native":
+        finish_reason = "stop"
+        content = '<|open|>tools<|sep|><|open|>call tool="write" index="1"<|sep|>'
     else:
         finish_reason = "stop"
         content = (

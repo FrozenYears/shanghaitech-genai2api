@@ -4,6 +4,8 @@ import logging
 import re
 import uuid
 
+from tools.kimi import parse_kimi_output
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,6 +24,7 @@ ACTION_OPEN_MARKER = "@@ACTION@@"
 ACTION_CLOSE_MARKER = "@@END_ACTION@@"
 TOOL_CALL_OPEN_MARKERS = (
     ACTION_OPEN_MARKER,
+    "<|open|>",
     "<tool_call",
     DSML_OPEN_PREFIX_FULLWIDTH,
     DSML_OPEN_PREFIX_ASCII,
@@ -116,8 +119,8 @@ def find_tool_call_open(text):
 
 
 def action_call_prefix_len(text):
-    """返回不完整 action 开始标记的尾部长度。"""
-    return _tag_prefix_len(text, ACTION_OPEN_MARKER)
+    """返回不完整 action 或 K3 原生开始标记的尾部长度。"""
+    return max(_tag_prefix_len(text, ACTION_OPEN_MARKER), _tag_prefix_len(text, "<|open|>"))
 
 
 
@@ -966,15 +969,32 @@ def extract_tool_calls(content, allowed_tool_names=None):
     if not isinstance(content, str):
         return None, content
 
-    # 先识别原始封套，不能先删掉代码引用里的 think/DSML 改变反引号配对。
-    action_result = _extract_action_envelope(content, allowed_tool_names)
-    if action_result is not None:
-        return action_result
     code_free = CODE_QUOTE_RE.sub(lambda match: " " * len(match.group()), content)
     if code_free != content and find_tool_call_open(code_free) < 0 and any(
         marker in content for marker in TOOL_CALL_OPEN_MARKERS
     ):
         return None, content
+    native_marker = _find_unquoted_match(re.compile(re.escape("<|open|>")), code_free)
+    action_marker = _find_unquoted_match(re.compile(re.escape(ACTION_OPEN_MARKER)), code_free)
+    if native_marker and (action_marker is None or native_marker.start() < action_marker.start()):
+        native_start = native_marker.start()
+        try:
+            native_text, native_calls = parse_kimi_output(content[native_start:], allowed_tool_names)
+        except ValueError as exc:
+            raise ToolCallParseError(str(exc)) from exc
+        calls = [{
+            "id": f"call_{uuid.uuid4().hex[:24]}",
+            "type": "function",
+            "function": {
+                "name": call["name"],
+                "arguments": json.dumps(call["arguments"], ensure_ascii=False),
+            },
+        } for call in native_calls]
+        return calls or None, (content[:native_start] + native_text).strip() or None
+    # 只解析外层协议；原生字符串中的 action 标记不能被当成另一种封套。
+    action_result = _extract_action_envelope(content, allowed_tool_names)
+    if action_result is not None:
+        return action_result
 
     transform_text = lambda text: normalize_tool_call_tags(strip_think_blocks(text))
     cleaned = _transform_outside_json_strings(content, transform_text)

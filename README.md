@@ -209,6 +209,8 @@ Pi 0.85.1 屏蔽用户插件后的真实验证见 [PI_REAL_WORLD_VALIDATION.md](
 
 `deepseek-pro` 与 `Kimi-k3` 的真实 write → edit → read、8,389 字节流式内容、低预算截断和 edit 失败恢复结果见 [当前工具复测报告](TEST_REPORT_deepseek_pro.md#2026-10-24deepseek--kimi-真实工具闭环复测) 及 [测量摘要](validation/local-model-tools-2026-10-24.json)。两模型的直连／relay 样本最终文件均逐字节匹配并正常结束；Kimi 有一次首次长内容复制错误，经回读发现并修正，仍须保留写后核验。
 
+进一步的 33 KB 全文复制、约 320 KB 源码局部编辑、12 阶段持续开发及 11 类工具（搜索、命令、SQLite、HTTP、后台任务等）验证见 [长时多工具报告](TEST_REPORT_deepseek_pro.md#长文件持续开发与多类型工具补充验证) 和 [证据摘要](validation/kimi-endurance-2026-10-24.json)。Kimi 原生 K3 XTML 调用现在由第一跳严格解析并转换为三种 API 的工具事件，不再只作为正文结束。现有长文件优先局部 edit，代码需真实运行检查，文件内容需独立回读／哈希核验；代理解析正确不保证模型复制内容正确。
+
 ## 已知限制
 
 - **令牌过期的恢复仍有缺口**：模型元数据与文档上传阶段遇到失效令牌时，实际观察到 HTTP 500 或流中断，尚未统一恢复与正确传播错误。本轮重启服务恢复了登录状态，详见 Pi 验证报告。
@@ -221,7 +223,7 @@ Pi 0.85.1 屏蔽用户插件后的真实验证见 [PI_REAL_WORLD_VALIDATION.md](
 - **思考内容由上游决定，且不保证返回**：deepseek-pro 在 Pi 这类大提示词下（约 2.2 万 token，含 24 个工具 schema）经常完全不发 `reasoning_content`；换成等长的中性提示词则稳定返回。这不是代理丢字段，代理也不会补造。重复同一问题还会命中平台缓存，直接返回旧答案且不带思考。
 - **重复相同问题会命中平台缓存**：同一 `model` 与相同问题重复请求时，平台会在几十毫秒内直接返回上次答案，且不带任何思考增量。想观察思考应以新提问验证；不能据此认为模型不再推理。
 - **部分模型关闭思考后仍把分析写进正文**：GLM 在 `thinking: false` 时，正文会以未标记的英文分析开头（例如 `The user wants me to…`）；同模型开启思考后思考字段与正文均正常。DeepSeek 关闭思考后正文保持干净。这是模型侧行为，代理不猜测哪些句子属于分析，也不事后改写成思考。
-- **工具调用由文本协议承载，不是模型原生工具通道**：主提示使用 `@@ACTION@@` JSON envelope；代理兼容既有 `<tool_call>` 与 GenAI DSML 响应。user 数据中的 `<think>`、tool/DSML 标签及 envelope 分隔符会以 JSON Unicode 转义传给模型，并在解析工具参数时恢复原文本。模型仍可能改写普通文件内容；必需调用未返回时会报错，写入后应通过 read 工具核验。
+- **工具调用由文本协议承载，不是平台原生函数接口**：主提示使用 `@@ACTION@@` JSON envelope；第一跳同时解析完整 Kimi K3 XTML typed tools 通道、既有 `<tool_call>` 和 DSML。未知、截断或无法无损解析的调用不交付。用户数据中的控制标记以 JSON Unicode 转义传给模型，工具参数解析时恢复。模型仍可能复制错误；必需调用缺失会报错，结果需实际验证。
 - **`tool_choice` 指定单个函数会收窄允许集合**：Chat 的 `{"type":"function",...}`、Anthropic 的 `{"type":"tool"}` 会让代理只透传该工具的调用，其它工具调用被丢弃；这只是代理层过滤 + prompt 约束，不是模型原生能力。
 - **输出长度由代理本地强制**：上游不执行 `maxToken`，代理按估算 token 在本地截断，普通文本截断时 Chat 的 `finish_reason` 与 Anthropic 的 `stop_reason` 会分别返回 `length` / `max_tokens`，Responses 发出 `response.incomplete`；若截断命中工具调用，则不发出工具调用并返回错误。预算包含思维链 token，因此对推理模型给很小的 `max_tokens` 时可能只产出思维链、正文为空。
 - **usage 是本地估算**：`prompt_tokens` / `input_tokens` / `completion_tokens` 均由代理按文本估算，不是上游真实计费值。

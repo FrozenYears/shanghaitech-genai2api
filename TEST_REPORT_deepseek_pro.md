@@ -1,5 +1,41 @@
 # deepseek-pro 反代能力测试报告
 
+## 长文件、持续开发与多类型工具补充验证
+
+证据摘要：[validation/kimi-endurance-2026-10-24.json](validation/kimi-endurance-2026-10-24.json)。全部使用真实模型和本地实际执行器；不将 HTTP 200、模型声称完成或部分文件正确作为通过标准。
+
+### 首次复制错误与原生工具遗漏是不同问题
+
+上次 Kimi 错误的原始输出已复核：第 043 行的散列字符串在上游参数里就被复制错误，8,389 字节变成 8,390 字节。它不是代理少写字节，不能靠 JSON Schema 消除语义复制错误。现有文件优先局部 edit，写后用完整哈希或实际程序校验，而不是让模型反复重抄全文。
+
+本次又抓到实际协议故障：Kimi 在 Anthropic 请求中输出 `<|open|>tools<|sep|>` / typed `argument`，第一跳把它当普通文本、以 `end_turn` 结束，没有执行工具。新增 `tools/kimi.py` 严格解析完整 K3 XTML，三个输出适配器共用；原始 string 不做 JSON 二次解码，array/object/number/boolean/null 按声明类型处理。未知工具、重复参数、坏类型、截断、第二个调用损坏时整个批次失败，不补齐执行。真实模型还返回了 tools 后的 response/message 结束标记，已覆盖。
+
+协议参考采用 [Xinference Kimi K3 parser](https://github.com/xorbitsai/inference/blob/main/xinference/model/llm/tool_parsers/kimi_k3_tool_parser.py) 和 [MLX K3 parser](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/tool_parsers/kimi_k3.py) 的实际格式证据，未安装新依赖。原生语法不再只能依靠提示避免。
+
+### 长文件与长会话
+
+| 场景 | Kimi-k3 | deepseek-pro |
+|---|---|---|
+| 33,803 字节全文复制、edit、read | 首次与最终字节均匹配；4 请求；首次写参数约 445.95 秒 | 首次与最终字节均匹配；5 请求；首次约 57.42 秒 |
+| 1,039 行、实际初始 82,550 字节源码，累计 12 个增量功能 | 50 请求、45 次工具；12 阶段实际 Python 累计断言通过；固定注释字节不变 | 55 请求、45 次工具；12 阶段断言通过；固定注释字节不变 |
+| 3,202 行源码局部修改并验证全文件哈希 | LF 316,877 字节和 CRLF 320,079 字节均匹配；各 3 请求，约 8 秒 | CRLF 文件匹配；4 请求，约 86 秒 |
+| 持续历史中的工具切换 | 同一会话扩展至 86 请求、79 次工具，约 795,208 序列化历史字符；原 12 功能仍通过 | 独立多工具会话 19 请求、19 次工具，全部场景结束 |
+
+Kimi 的 12 阶段开发快照跨度约 23.6 分钟，其中模型请求累计约 14.6 分钟；包含期间穿插其他顺序场景的间隔，不能称为 23.6 分钟连续模型推理。DeepSeek 第 9 阶段虽已通过验证仍继续优化，达到该阶段 9 请求上限，由下一条新任务推进；不能声称始终自然收敛。Kimi 在一次 edit 文本不匹配后恢复，两模型都确实运行只读 verifier，而不是只报告成功。
+
+### 不止文件工具
+
+覆盖 `write`、`edit`、`read`、`run_python`、`glob`、`grep`、`command`、`sql_query`、`http_get`、`start_job`、`job_status` 共 11 类。实测包括无匹配 grep（正常 exit 1）、命令 exit 2 后修正、SQLite 参数绑定错误后重查（A 收入 250，总收入 750）、HTTP 404 后正确请求、后台启动与终态区分，以及单封套三个独立调用和结果 ID 回传。两个模型均完成这些场景。长会话第一次缺失 fixture 的错误和一次 LF/CRLF verifier 基线错误是测试装置问题，已如实保留，补齐或修正后另行验证，不算模型成功样本。
+
+用户批准后，原 31100/31110 已重启加载修复。两个模型分别在 relay Chat、第一跳 Anthropic Messages、第一跳 Responses 的六条原端口工作流都实际执行 5–6 次工具（共 32 次）并正常结束；接受标准包含实际命令失败／恢复、SQL、glob、HTTP 的返回结果，不是 HTTP 状态。单独生成的真实 K3 XTML command 经新解析器后真实执行，exit 0。根项目回归 131 passed；relay 39 passed、42 subtests passed。
+
+### 使用边界
+
+- 现有长文件优先小 edit，不重建固定数据或全文；首次复制准确不能作为模型承诺。
+- 低延迟、长输出和全自动收敛不等价，本轮样本不证明任意无人值守小时级任务稳定。
+- 代码改动必须运行实际检查；数据文件用独立字节哈希。read 看起来正确不足以证明所有长行都一致。
+- 保留完整历史；后台 running 状态不等于完成；失败退出不能被客户端执行器包装成成功。
+
 ## 2026-10-24：DeepSeek / Kimi 真实工具闭环复测
 
 本节是当前版本复测；下文原报告的 60 秒超时、工具选择及能力结论保留为历史记录，不代表当前实现。

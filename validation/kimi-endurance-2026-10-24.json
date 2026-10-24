@@ -1,0 +1,73 @@
+{
+  "date": "2026-10-24",
+  "scope": "Actual GenAI models, isolated real filesystem and subprocess executor, persistent full history, real read-only SQLite and loopback HTTP server. Serial execution. No mocked model responses.",
+  "models": ["Kimi-k3", "deepseek-pro"],
+  "previous_copy_failure": {
+    "capture": "78bdd7499274444fab8e7a3a18275923.json",
+    "expected_bytes": 8389,
+    "model_generated_bytes": 8390,
+    "row": "043",
+    "expected_hash": "44cb730c420480a0477b505ae68af508fb90f96cf0ec54c6ad16949dd427f13a",
+    "model_generated_hash": "44cb730c420480a0477b505ae68ae517e159f890ac4da883b6b17dc651b3a8049",
+    "finding": "The wrong characters are present in raw upstream tool arguments before parsing or disk write. JSON/schema validation cannot prove user-intended content."
+  },
+  "monolithic_copy": {
+    "bytes": 33803,
+    "final_sha256": "29e64d5bb3f7a66c03f8600c2b545acd11541cc419dd29ac167003491b53edbc",
+    "max_tokens": 30000,
+    "runs": [
+      {"model":"Kimi-k3","route":"relay","first_write_exact":true,"final_disk_exact":true,"normal_end":true,"requests":4,"calls":3,"first_request_seconds":445.954,"all_model_seconds":503.126},
+      {"model":"deepseek-pro","route":"relay","first_write_exact":true,"final_disk_exact":true,"normal_end":true,"requests":5,"calls":4,"first_request_seconds":57.422,"all_model_seconds":71.108}
+    ],
+    "limit": "Single samples, not guaranteed latency or copy fidelity. Kimi long output was slow despite correct bytes."
+  },
+  "persistent_development": {
+    "initial_module_logical_utf8_bytes": 81511,
+    "initial_module_actual_crlf_disk_bytes": 82550,
+    "protected_fixture_disk_sha256": "2cfd039a6b45f8a39657aa346e470d153d4b4457bdc98123b00fdbdc9b135a07",
+    "initial_module_lines": 1039,
+    "contracts": ["to_cents","sum_amounts","parse_entry","totals_by_category","month_totals","format_cents","render_report","load_entries","deduplicate","balance_after","filter_dates","export_json"],
+    "verifier": "Actual read-only Python script; cumulative assertions for consumer-visible boundaries. Independent execution after every stage. Fixture comments must remain unchanged.",
+    "runs": [
+      {"model":"Kimi-k3","stages_passed":12,"requests":50,"tool_calls":45,"actual_model_seconds":874.34,"wall_snapshot_seconds":1413.09,"largest_history_chars":771765,"final_module_bytes":87253,"fixture_unchanged":true,"all_stage_verifiers_exit_zero":true,"observed_error":"One exact-edit mismatch; model recovered using real output.","all_stages_ended_normally":true},
+      {"model":"deepseek-pro","stages_passed":12,"requests":55,"tool_calls":45,"actual_model_seconds":464.88,"largest_history_chars":1293839,"final_module_bytes":86980,"fixture_unchanged":true,"all_stage_verifiers_exit_zero":true,"all_stages_ended_normally":false,"observed_limit":"Stage 9 passed its verifier but kept optimizing, reached the 9-request stage cap. Stage 10 was then initiated by the harness as a new user task. Final stage ended normally."}
+    ]
+  },
+  "large_existing_module_edits": [
+    {"model":"Kimi-k3","bytes":316877,"lines":3202,"line_ending":"LF","calls":["edit","run_python"],"requests":3,"model_seconds":8.14,"entire_expected_file_hash_matches":true,"verifier_exit_zero":true},
+    {"model":"Kimi-k3","bytes":320079,"lines":3202,"line_ending":"CRLF","calls":["edit","run_python"],"requests":3,"model_seconds":8.17,"entire_expected_file_hash_matches":true,"verifier_exit_zero":true},
+    {"model":"deepseek-pro","bytes":320079,"lines":3202,"line_ending":"CRLF","calls":["read","edit","run_python"],"requests":4,"model_seconds":86.2,"entire_expected_file_hash_matches":true,"verifier_exit_zero":true}
+  ],
+  "broad_tool_coverage": {
+    "tools": ["write","edit","read","run_python","glob","grep","command","sql_query","http_get","start_job","job_status"],
+    "scenarios": ["glob and regex search with real no-match exit 1","command exit 2 then correct rerun and actual git --version","SQLite parameter binding error then bound query: SKU A revenue 250, all revenue 750","HTTP 404 then catalog and health 200","background job start, status, terminal exit and generated result sum 5050","one three-call batch: glob, SQL count 3, HTTP health"],
+    "fresh_sessions": [
+      {"model":"Kimi-k3","requests":17,"tool_calls":18,"all_six_scenarios_ended_normally":true},
+      {"model":"deepseek-pro","requests":19,"tool_calls":19,"all_six_scenarios_ended_normally":true}
+    ],
+    "same_long_Kimi_session": {"requests_total":86,"tool_calls_total":79,"largest_history_chars":795208,"all_six_populated_fixture_scenarios_ended_normally":true,"original_twelve_contract_verifier_still_passes":true,"fixture_unchanged":true},
+    "test_harness_limits": ["The first broad-tool attempt in the long session lacked its fixture files/database. Real failures were reported, not successes; fixtures were then installed and all six scenarios retried.","An initial large-file verifier used an LF hash against a Windows CRLF seed. This harness error was corrected with explicitly seeded LF/CRLF baselines; models did not claim the failing verifier passed."]
+  },
+  "native_K3_protocol": {
+    "observed_failure": "Kimi emitted native XTML in a real Anthropic request. Root proxy returned the native call as plain text with end_turn, so no tools executed.",
+    "real_native_output": "<|open|>tools<|sep|><|open|>call tool=\"command\" index=\"1\"<|sep|><|open|>argument key=\"argv\" type=\"array\"<|sep|>[\"python\",\"command_fixture.py\",\"--check\"]<|close|>argument<|sep|><|close|>call<|sep|><|close|>tools<|sep|><|close|>response<|sep|><|close|>message<|sep|>",
+    "fixed_parser_result": {"name":"command","arguments":{"argv":["python","command_fixture.py","--check"]},"actual_process_exit_code":0},
+    "fix": "Parse complete native XTML without lossy repair. Raw strings remain raw; typed arguments JSON-decode and must match declared type. Unknown/disallowed tools, partial channels, duplicated keys, malformed JSON or bad second calls reject the full batch.",
+    "reference": "https://github.com/xorbitsai/inference/blob/main/xinference/model/llm/tool_parsers/kimi_k3_tool_parser.py"
+  },
+  "deployment": {
+    "user_approved_restart": true,
+    "live_ports": [31100,31110],
+    "verified_workflows": [
+      {"model":"Kimi-k3","port":31110,"protocol":"chat","actual_tool_calls":6,"accepted":true},
+      {"model":"Kimi-k3","port":31100,"protocol":"messages","actual_tool_calls":5,"accepted":true},
+      {"model":"Kimi-k3","port":31100,"protocol":"responses","actual_tool_calls":5,"accepted":true},
+      {"model":"deepseek-pro","port":31110,"protocol":"chat","actual_tool_calls":5,"accepted":true},
+      {"model":"deepseek-pro","port":31100,"protocol":"messages","actual_tool_calls":6,"accepted":true},
+      {"model":"deepseek-pro","port":31100,"protocol":"responses","actual_tool_calls":5,"accepted":true}
+    ],
+    "acceptance": "Actual command failure and recovery, SQL revenue, file discovery and HTTP health must execute and return correct results before final answer. HTTP 200 alone is not success."
+  },
+  "regression_checks": {"root_passed":131,"relay_passed":39,"relay_subtests_passed":42},
+  "limits": ["Kimi semantic copying errors remain possible even when native transport is correct.","Prefer targeted edits in existing files and actual execution/hash verification over monolithic rewriting.","Persistent sessions were bounded; no guarantee of arbitrary unattended hours or all model/client/tool combinations.","No model-output suppression, automatic semantic rewriting, or fake completion was introduced."]
+}

@@ -10,6 +10,8 @@
 - 拒绝不完整 action envelope、截断／损坏调用及提前结束的上游 SSE，不交付可执行的部分参数。保留 legacy XML/DSML parser compatibility。
 - 针对 deepseek-pro／Kimi-k3 的真实工具任务修复完成说明被误判为调用：在 think/DSML 清理前识别原始封套与 Markdown 引用，流式保留未闭合引用，Anthropic 保留引用中的 think 字面数据；relay 原生语法检查不再扫描引用及合法参数。
 - 明确工具结果是已执行回执和验证后的正常退出条件。新增两模型 8,389 字节流式文件、截断不交付及 edit 失败恢复的实测记录；如实记录 Kimi 首次复制错误后经回读修正和 DeepSeek 额外一次 read 的限制。
+- 新增完整 Kimi K3 XTML typed tools 通道解析，修复实际调用输出被 Anthropic 直连当作普通正文正常结束的问题。三个输出协议共用严格解析，保留原始字符串与 typed JSON；不接受截断、坏类型、未知工具或部分批次。
+- 增加真实 33 KB 全文、320 KB 局部编辑、12 阶段持续开发及 11 类工具验证记录；区分模型复制错误、协议遗漏和测试装置错误。用户批准重启后在原端口复核两个模型的 Chat／Messages／Responses 实际工具执行。
 
 ### Relay 修复
 

@@ -114,7 +114,7 @@ wire_api = "responses"
 - **Claude Code 兼容** — 提供 Anthropic Messages API，支持 `tool_use/tool_result` 转换与扩展思考（thinking）块，可直接接入 Claude Code
 - **Codex CLI 兼容** — 提供 OpenAI Responses API，支持 `function_call`、`custom_tool_call`（如 apply_patch）与 reasoning summary 事件
 - **OpenAI 兼容** — 同时提供 OpenAI Chat Completion API，支持 Cursor、Continue 等客户端
-- **Tool Calling** — 工具定义放在当前 user 轮次，采用文本协议兼容非原生模型；工具由客户端执行，代理只转发完整调用，不会把截断或无法解析的调用报告为成功
+- **Tool Calling** — 当前轮 user 消息携带 JSON Schema 与 `@@ACTION@@...@@END_ACTION@@` 文本协议；代理转为三个客户端协议的工具调用，工具仍由客户端执行。会保留参数内的控制标记文本，并拒绝损坏、截断或不符合必需 `tool_choice` 的调用
 - **思维链透传** — 上游 `reasoning_content` 在三个接口里分别以 `reasoning_content`、thinking 块、reasoning 事件输出
 - **自动登录与刷新** — 学号密码模式通过 CAS 自动登录，JWT 过期静默刷新
 - **动态模型列表** — 自动从 GenAI 平台拉取可用模型，`/v1/models` 额外返回图片、文档、搜索、思考开关的 `capabilities`
@@ -217,8 +217,8 @@ Pi 0.85.1 屏蔽用户插件后的真实验证见 [PI_REAL_WORLD_VALIDATION.md](
 - **思考内容由上游决定，且不保证返回**：deepseek-pro 在 Pi 这类大提示词下（约 2.2 万 token，含 24 个工具 schema）经常完全不发 `reasoning_content`；换成等长的中性提示词则稳定返回。这不是代理丢字段，代理也不会补造。重复同一问题还会命中平台缓存，直接返回旧答案且不带思考。
 - **重复相同问题会命中平台缓存**：同一 `model` 与相同问题重复请求时，平台会在几十毫秒内直接返回上次答案，且不带任何思考增量。想观察思考应以新提问验证；不能据此认为模型不再推理。
 - **部分模型关闭思考后仍把分析写进正文**：GLM 在 `thinking: false` 时，正文会以未标记的英文分析开头（例如 `The user wants me to…`）；同模型开启思考后思考字段与正文均正常。DeepSeek 关闭思考后正文保持干净。这是模型侧行为，代理不猜测哪些句子属于分析，也不事后改写成思考。
-- **工具调用仍由文本模拟**：function calling 依赖当前轮 prompt 注入和 `<tool_call>` 文本解析；模型输出损坏或截断时不会透传可执行的部分参数，非流式返回错误，流式发送 `error` 事件。模型仍可能不遵循格式；支持图片输入不等于支持原生 function calling。
-- **`tool_choice` 指定单个函数会收窄允许集合**：Chat 的 `{"type":"function",...}`、Anthropic 的 `{"type":"tool"}` 会让代理只透传该工具的调用，其它工具调用被丢弃；但这只是代理层过滤 + prompt 约束，不是模型原生能力。
+- **工具调用由文本协议承载，不是模型原生工具通道**：主提示使用 `@@ACTION@@` JSON envelope；代理兼容既有 `<tool_call>` 与 GenAI DSML 响应。user 数据中的 `<think>`、tool/DSML 标签及 envelope 分隔符会以 JSON Unicode 转义传给模型，并在解析工具参数时恢复原文本。模型仍可能改写普通文件内容；必需调用未返回时会报错，写入后应通过 read 工具核验。
+- **`tool_choice` 指定单个函数会收窄允许集合**：Chat 的 `{"type":"function",...}`、Anthropic 的 `{"type":"tool"}` 会让代理只透传该工具的调用，其它工具调用被丢弃；这只是代理层过滤 + prompt 约束，不是模型原生能力。
 - **输出长度由代理本地强制**：上游不执行 `maxToken`，代理按估算 token 在本地截断，普通文本截断时 Chat 的 `finish_reason` 与 Anthropic 的 `stop_reason` 会分别返回 `length` / `max_tokens`，Responses 发出 `response.incomplete`；若截断命中工具调用，则不发出工具调用并返回错误。预算包含思维链 token，因此对推理模型给很小的 `max_tokens` 时可能只产出思维链、正文为空。
 - **usage 是本地估算**：`prompt_tokens` / `input_tokens` / `completion_tokens` 均由代理按文本估算，不是上游真实计费值。
 - **思考支持开关，不支持档位或精确预算**：客户端推理参数映射为上游 `thinking` 布尔值。模型标为不提供开关、额度不足或上游未返回思考字段时，代理不会补造思考内容。`/v1/models` 的 `capabilities` 来自平台配置，不代表已逐模型保证所有组合都可用。

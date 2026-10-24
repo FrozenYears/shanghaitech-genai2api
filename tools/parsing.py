@@ -18,11 +18,22 @@ class ToolCallParseError(ValueError):
 # 同时接受全角 ｜ 与半角 | 两种竖线。
 DSML_OPEN_PREFIX_FULLWIDTH = "<｜DSML｜"
 DSML_OPEN_PREFIX_ASCII = "<|DSML|"
+ACTION_OPEN_MARKER = "@@ACTION@@"
+ACTION_CLOSE_MARKER = "@@END_ACTION@@"
 TOOL_CALL_OPEN_MARKERS = (
+    ACTION_OPEN_MARKER,
     "<tool_call",
     DSML_OPEN_PREFIX_FULLWIDTH,
     DSML_OPEN_PREFIX_ASCII,
 )
+
+ACTION_OR_CODE_RE = re.compile(
+    r"^ {0,3}(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^ {0,3}(?P=fence)[ \t]*(?:\n|$)"
+    r"|(?<!`)`+[^\n]*?(?<!`)`+(?!`)"
+    r"|@@ACTION@@|@@ACTION@(?!@)|@@END_ACTION@@",
+    re.MULTILINE | re.DOTALL,
+)
+
 DSML_OPEN_TAG_RE = re.compile(r"<\s*[|｜]\s*DSML\s*[|｜]\s*([A-Za-z_][A-Za-z0-9_]*)?\s*>", re.IGNORECASE)
 DSML_CLOSE_TAG_RE = re.compile(r"</\s*[|｜]\s*DSML\s*[|｜]\s*([A-Za-z_][A-Za-z0-9_]*)?\s*>", re.IGNORECASE)
 # 变体：<｜DSML｜ name="read">{...}，工具名写在属性里。
@@ -79,13 +90,23 @@ def strip_dsml_tags(text):
 
 
 def find_tool_call_open(text):
-    """返回最早的完整工具标记起始下标（<tool_call 或 DSML 形式）；没有则返回 -1。"""
+    """返回最早的显式工具调用起点。"""
     best = -1
     for marker in TOOL_CALL_OPEN_MARKERS:
-        position = text.find(marker)
+        if marker == ACTION_OPEN_MARKER:
+            match = _find_unquoted_match(re.compile(re.escape(marker)), text)
+            position = match.start() if match else -1
+        else:
+            position = text.find(marker)
         if position >= 0 and (best < 0 or position < best):
             best = position
     return best
+
+
+def action_call_prefix_len(text):
+    """返回不完整 action 开始标记的尾部长度。"""
+    return _tag_prefix_len(text, ACTION_OPEN_MARKER)
+
 
 
 def tool_call_prefix_len(text):
@@ -847,7 +868,7 @@ def _find_unquoted_match(pattern, text, start=0):
                 in_string = False
         elif char == '"':
             in_string = True
-        elif char == "<":
+        elif char == pattern.pattern[0]:
             match = pattern.match(text, index)
             if match:
                 return match
@@ -883,12 +904,63 @@ def _find_tool_call_end(text, start):
     return len(text), len(text), False
 
 
+def _extract_action_envelope(content, allowed_tool_names):
+    opening = None
+    for match in ACTION_OR_CODE_RE.finditer(content):
+        marker = match.group()
+        if marker == ACTION_OPEN_MARKER:
+            opening = match
+            break
+        if marker in {"@@ACTION@", ACTION_CLOSE_MARKER}:
+            raise ToolCallParseError("Action envelope marker is malformed or misplaced")
+    if not opening:
+        return None
+
+    close_pattern = re.compile(re.escape(ACTION_CLOSE_MARKER))
+    closing = _find_unquoted_match(close_pattern, content, opening.end())
+    if not closing:
+        raise ToolCallParseError("Action envelope is incomplete")
+    if content[closing.end():].strip():
+        raise ToolCallParseError("Action envelope must be the final response content")
+
+    try:
+        payload = json.loads(content[opening.end():closing.start()])
+    except json.JSONDecodeError as exc:
+        raise ToolCallParseError("Action envelope contains invalid JSON") from exc
+    if not isinstance(payload, dict) or set(payload) != {"calls"}:
+        raise ToolCallParseError("Action envelope must contain only a calls array")
+    if not isinstance(payload["calls"], list) or not payload["calls"]:
+        raise ToolCallParseError("Action envelope calls must be a non-empty array")
+
+    tool_calls = []
+    for index, call in enumerate(payload["calls"]):
+        if not isinstance(call, dict) or set(call) != {"operation", "parameters"}:
+            raise ToolCallParseError(f"Action call {index} must contain operation and parameters")
+        name = call["operation"]
+        parameters = call["parameters"]
+        if not isinstance(name, str) or not isinstance(parameters, dict):
+            raise ToolCallParseError(f"Action call {index} has invalid operation or parameters")
+        if allowed_tool_names and name not in allowed_tool_names:
+            raise ToolCallParseError("Action envelope requested a tool that is not allowed")
+        tool_calls.append({
+            "id": f"call_{uuid.uuid4().hex[:24]}",
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": json.dumps(parameters, ensure_ascii=False),
+            },
+        })
+    return tool_calls, _clean_remaining_text(content[:opening.start()])
+
 def extract_tool_calls(content, allowed_tool_names=None):
     if not isinstance(content, str):
         return None, content
 
     transform_text = lambda text: normalize_tool_call_tags(strip_think_blocks(text))
     cleaned = _transform_outside_json_strings(content, transform_text)
+    action_result = _extract_action_envelope(cleaned, allowed_tool_names)
+    if action_result is not None:
+        return action_result
     fence_pattern = re.compile(
         r'```(?:xml|json|plaintext|text)?\s*\n?\s*(<tool_call\b[^>]*>.*?</tool_call>)\s*\n?\s*```',
         re.DOTALL,

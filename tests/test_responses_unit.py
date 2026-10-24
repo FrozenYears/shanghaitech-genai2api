@@ -75,8 +75,8 @@ def test_responses_input_conversion_with_tools_and_reasoning_history():
 
     assert messages[0] == {"role": "system", "content": "你是助手"}
     assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
-    assert "<tool_call>" in messages[2]["content"]
-    assert '"name": "shell"' in messages[2]["content"]
+    assert "@@ACTION@@" in messages[2]["content"]
+    assert '"operation": "shell"' in messages[2]["content"]
     assert "<tool_call_id>call_1</tool_call_id>" in messages[3]["content"]
     assert "file.txt" in messages[3]["content"]
     assert "继续" in messages[3]["content"]

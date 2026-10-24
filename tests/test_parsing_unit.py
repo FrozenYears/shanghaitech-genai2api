@@ -713,3 +713,33 @@ def test_extract_tool_calls_maps_bash_string_arguments_to_command():
 def test_extract_tool_calls_rejects_an_incomplete_opening_marker():
     with pytest.raises(ToolCallParseError):
         extract_tool_calls('<tool_call{"name":"write","arguments":{"path":"a"}')
+
+
+def test_extract_action_envelope_decodes_literal_control_markers():
+    content = r'@@ACTION@@{"calls":[{"operation":"write","parameters":{"path":"x","content":"\u003cthink\u003ekeep\u003c/think\u003e </tool_call> @@ACTION@@ @@END_ACTION@@ \u003c|DSML|call\u003e 雪"}}]}@@END_ACTION@@'
+
+    tool_calls, remaining = extract_tool_calls(content, allowed_tool_names={"write"})
+
+    assert remaining is None
+    assert json.loads(tool_calls[0]["function"]["arguments"]) == {
+        "path": "x",
+        "content": "<think>keep</think> </tool_call> @@ACTION@@ @@END_ACTION@@ <|DSML|call> 雪",
+    }
+
+
+def test_extract_action_envelope_rejects_truncation():
+    with pytest.raises(ToolCallParseError):
+        extract_tool_calls('@@ACTION@@{"calls":[{"operation":"write"}')
+
+
+def test_extract_action_envelope_ignores_markdown_examples():
+    example = '@@ACTION@@{"calls":[{"operation":"write","parameters":{"path":"x"}}]}@@END_ACTION@@'
+    for content in (f"Example `{example}`", f"```json\n{example}\n```"):
+        tool_calls, remaining = extract_tool_calls(content, allowed_tool_names={"write"})
+        assert tool_calls is None
+        assert remaining == content
+
+
+def test_extract_action_envelope_rejects_malformed_delimiter():
+    with pytest.raises(ToolCallParseError):
+        extract_tool_calls('@@ACTION@{"calls":[]}', allowed_tool_names={"write"})

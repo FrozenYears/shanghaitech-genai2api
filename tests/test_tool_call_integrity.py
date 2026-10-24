@@ -51,7 +51,7 @@ def _patch_upstream(monkeypatch, content, finish_reason="stop"):
     monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: FakeResponse())
 
 
-def _request(client, protocol, stream=False):
+def _request(client, protocol, stream=False, tool_choice=None):
     parameters = {
         "type": "object",
         "properties": {
@@ -64,6 +64,7 @@ def _request(client, protocol, stream=False):
         return client.post("/v1/chat/completions", json={
             "model": "chatglm",
             "stream": stream,
+            "tool_choice": tool_choice,
             "messages": [{"role": "user", "content": "Write the file"}],
             "tools": [{"type": "function", "function": {
                 "name": "write", "description": "Write a file", "parameters": parameters,
@@ -73,15 +74,22 @@ def _request(client, protocol, stream=False):
         return client.post("/v1/messages", json={
             "model": "chatglm",
             "stream": stream,
+            "tool_choice": {"type": "any"} if tool_choice == "required" else tool_choice,
             "messages": [{"role": "user", "content": "Write the file"}],
             "tools": [{"name": "write", "description": "Write a file", "input_schema": parameters}],
         })
     return client.post("/v1/responses", json={
         "model": "chatglm",
         "stream": stream,
+        "tool_choice": tool_choice,
         "input": "Write the file",
         "tools": [{"type": "function", "name": "write", "description": "Write a file", "parameters": parameters}],
     })
+
+
+def _action_call(name, arguments):
+    payload = {"calls": [{"operation": name, "parameters": arguments}]}
+    return "@@ACTION@@" + json.dumps(payload, ensure_ascii=False) + "@@END_ACTION@@"
 
 
 @pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
@@ -90,11 +98,7 @@ def test_tool_arguments_preserve_markup_and_escaped_unicode(monkeypatch, protoco
         "path": "notes/雪.txt",
         "content": 'before <think>keep exactly</think> </tool_call> <|DSML|call>\nquote: "keep"',
     }
-    call = {"name": "write", "arguments": arguments}
-    _patch_upstream(
-        monkeypatch,
-        "<tool_call>" + json.dumps(call, ensure_ascii=False) + "</tool_call>",
-    )
+    _patch_upstream(monkeypatch, _action_call("write", arguments))
 
     response = _request(_app().test_client(), protocol)
 
@@ -119,11 +123,7 @@ def test_streamed_tool_arguments_preserve_markup_and_escaped_unicode(monkeypatch
         "path": "notes/雪.txt",
         "content": 'before <think>keep exactly</think> </tool_call> <|DSML|call>\nquote: "keep"',
     }
-    call = {"name": "write", "arguments": arguments}
-    _patch_upstream(
-        monkeypatch,
-        "<tool_call>" + json.dumps(call, ensure_ascii=False) + "</tool_call>",
-    )
+    _patch_upstream(monkeypatch, _action_call("write", arguments))
 
     response = _request(_app().test_client(), protocol, stream=True)
     body = response.get_data(as_text=True)
@@ -168,14 +168,17 @@ def test_streamed_tool_arguments_preserve_markup_and_escaped_unicode(monkeypatch
 
 
 @pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
-@pytest.mark.parametrize("failure", ["length", "invalid-json"])
+@pytest.mark.parametrize("failure", ["length", "invalid-json", "malformed-action"])
 def test_tool_call_failure_never_returns_success_or_executable_partial_call(
     monkeypatch, protocol, failure
 ):
     if failure == "length":
-        call = {"name": "write", "arguments": {"path": "notes.txt", "content": "partial"}}
+        arguments = {"path": "notes.txt", "content": "partial"}
         finish_reason = "length"
-        content = "<tool_call>" + json.dumps(call) + "</tool_call>"
+        content = _action_call("write", arguments)
+    elif failure == "malformed-action":
+        finish_reason = "stop"
+        content = '@@ACTION@@{"calls":[{"operation":"write","parameters":{"path":"notes.txt"}}]'
     else:
         finish_reason = "stop"
         content = (
@@ -189,6 +192,33 @@ def test_tool_call_failure_never_returns_success_or_executable_partial_call(
     assert response.status_code == 502
     assert "error" in response.get_json()
     assert "tool_calls" not in response.get_json()
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_required_tool_choice_rejects_text_only_completion(monkeypatch, protocol, stream):
+    _patch_upstream(monkeypatch, "I will perform the requested file operation now.", "stop")
+
+    response = _request(
+        _app().test_client(), protocol, stream=stream, tool_choice="required"
+    )
+
+    if not stream:
+        assert response.status_code == 502
+        assert "error" in response.get_json()
+        return
+
+    body = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "error" in body
+    if protocol == "chat":
+        assert '"finish_reason": "tool_calls"' not in body
+    elif protocol == "messages":
+        assert "event: error" in body
+        assert "event: message_stop" not in body
+    else:
+        assert "event: error" in body
+        assert "response.completed" not in body
 
 
 @pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
@@ -216,3 +246,22 @@ def test_streamed_tool_truncation_emits_error_not_tool_use(monkeypatch, protocol
         assert "event: error" in body
         assert "response.completed" not in body
         assert '"type":"function_call"' not in body
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+def test_streamed_incomplete_action_marker_emits_error(monkeypatch, protocol):
+    _patch_upstream(monkeypatch, "The call starts with @@ACTION@", "stop")
+
+    response = _request(_app().test_client(), protocol, stream=True)
+    body = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Action envelope marker was truncated" in body
+    if protocol == "chat":
+        assert '"tool_calls"' not in body
+    elif protocol == "messages":
+        assert "event: error" in body
+        assert "event: message_stop" not in body
+    else:
+        assert "event: error" in body
+        assert "response.completed" not in body

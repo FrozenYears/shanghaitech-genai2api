@@ -6,8 +6,8 @@ from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from provider.anthropic import parse_tool_arguments
 from provider.genai import estimate_text_tokens, iter_genai_stream, split_history_messages
-from tools.parsing import ToolCallParseError, extract_tool_calls, find_tool_call_open, tool_call_prefix_len
-from tools.prompts import flatten_message_content, inject_tool_prompt, normalize_content, merge_content
+from tools.parsing import ACTION_CLOSE_MARKER, ACTION_OPEN_MARKER, ToolCallParseError, action_call_prefix_len, extract_tool_calls, find_tool_call_open, tool_call_prefix_len
+from tools.prompts import escape_tool_control_markers, flatten_message_content, inject_tool_prompt, normalize_content, merge_content
 
 logger = logging.getLogger(__name__)
 
@@ -142,22 +142,24 @@ def responses_input_to_genai_messages(input_value: Any, instructions: Any = None
                 role = "user"
             messages.append({"role": role, "content": normalize_content(item.get("content"))})
         elif item_type == "function_call":
-            call_obj = {
-                "name": item.get("name", ""),
-                "arguments": parse_tool_arguments(item.get("arguments", {})),
-            }
+            call_obj = {"calls": [{
+                "operation": item.get("name", ""),
+                "parameters": parse_tool_arguments(item.get("arguments", {})),
+            }]}
+            call_json = escape_tool_control_markers(json.dumps(call_obj, ensure_ascii=False))
             messages.append({
                 "role": "assistant",
-                "content": f"<tool_call>\n{json.dumps(call_obj, ensure_ascii=False)}\n</tool_call>",
+                "content": f"{ACTION_OPEN_MARKER}{call_json}{ACTION_CLOSE_MARKER}",
             })
         elif item_type in ("custom_tool_call",):
-            call_obj = {
-                "name": item.get("name", ""),
-                "arguments": {"input": item.get("input", "")},
-            }
+            call_obj = {"calls": [{
+                "operation": item.get("name", ""),
+                "parameters": {"input": item.get("input", "")},
+            }]}
+            call_json = escape_tool_control_markers(json.dumps(call_obj, ensure_ascii=False))
             messages.append({
                 "role": "assistant",
-                "content": f"<tool_call>\n{json.dumps(call_obj, ensure_ascii=False)}\n</tool_call>",
+                "content": f"{ACTION_OPEN_MARKER}{call_json}{ACTION_CLOSE_MARKER}",
             })
         elif item_type in ("function_call_output", "custom_tool_call_output"):
             output_parts = normalize_content(item.get("output"))
@@ -265,6 +267,14 @@ def stream_genai_as_responses(
 ) -> Generator[str, None, None]:
     """把 GenAI 流转换成 OpenAI Responses API 的 SSE 事件。"""
     custom_tool_names = custom_tool_names or set()
+    choice = (response_meta or {}).get("tool_choice")
+    tool_choice_required = bool(allowed_tool_names) and (
+        choice == "required"
+        or isinstance(choice, dict) and (
+            choice.get("type") == "function"
+            or choice.get("type") == "allowed_tools" and choice.get("mode") == "required"
+        )
+    )
     response_id = f"resp_{uuid.uuid4().hex[:24]}"
     created_at = int(time.time())
     sequence_number = 0
@@ -566,6 +576,13 @@ def stream_genai_as_responses(
                 "param": None,
             })
             return
+        if tool_choice_required and not tool_detected:
+            yield ev("error", {
+                "code": None,
+                "message": "Required tool call was not returned; no action was emitted",
+                "param": None,
+            })
+            return
         yield from finish_reasoning()
 
         if tool_detected:
@@ -585,6 +602,13 @@ def stream_genai_as_responses(
                     message_parts.append(remaining)
                     yield from message_delta(remaining)
             else:
+                if tool_choice_required:
+                    yield ev("error", {
+                        "code": None,
+                        "message": "Required tool call was not returned; no action was emitted",
+                        "param": None,
+                    })
+                    return
                 logger.warning("Tool tag detected but parsing failed; emitting as text")
                 emit_target = remaining if remaining is not None else tool_buffer
                 if emit_target:
@@ -598,6 +622,13 @@ def stream_genai_as_responses(
             if tool_calls:
                 yield from emit_tool_calls(tool_calls)
         else:
+            if action_call_prefix_len(buffer):
+                yield ev("error", {
+                    "code": None,
+                    "message": "Action envelope marker was truncated; no action was emitted",
+                    "param": None,
+                })
+                return
             if buffer:
                 if message_item_id is None:
                     yield from start_message()

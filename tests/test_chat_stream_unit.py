@@ -73,7 +73,7 @@ def test_stream_genai_response_uses_fixed_id_and_keeps_reasoning(monkeypatch):
 def test_stream_genai_response_with_tools_keeps_reasoning_and_tool_calls(monkeypatch):
     _patch_upstream(monkeypatch, [
         {"choices": [{"delta": {"reasoning_content": "需要执行命令"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": '<tool_call>{"name": "Bash", "arguments": {"command": "pwd"}}</tool_call>'}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": '@@ACTION@@{"calls":[{"operation":"Bash","parameters":{"command":"pwd"}}]}@@END_ACTION@@'}, "finish_reason": None}]},
         {"choices": [{"delta": {}, "finish_reason": "stop"}]},
     ])
 
@@ -100,7 +100,7 @@ def test_stream_genai_response_with_tools_keeps_reasoning_and_tool_calls(monkeyp
     assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
     # 工具标记不应泄漏到正文
     assert all(
-        "<tool_call>" not in chunk["choices"][0]["delta"].get("content", "")
+        "@@ACTION@@" not in chunk["choices"][0]["delta"].get("content", "")
         for chunk in chunks
     )
 

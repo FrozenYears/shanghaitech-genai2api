@@ -8,8 +8,8 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from config import model_registry
 from provider.genai import estimate_messages_tokens, estimate_text_tokens, iter_genai_stream
-from tools.parsing import ToolCallParseError, extract_tool_calls, find_tool_call_open, tool_call_prefix_len
-from tools.prompts import inject_tool_prompt, normalize_content, merge_content, flatten_message_content
+from tools.parsing import ACTION_CLOSE_MARKER, ACTION_OPEN_MARKER, ToolCallParseError, action_call_prefix_len, extract_tool_calls, find_tool_call_open, tool_call_prefix_len
+from tools.prompts import escape_tool_control_markers, inject_tool_prompt, normalize_content, merge_content, flatten_message_content
 from provider.features import is_web_search_tool
 
 logger = logging.getLogger(__name__)
@@ -196,8 +196,12 @@ def anthropic_message_to_genai_messages(message: Dict[str, Any]) -> List[Dict[st
         role = "user"
     elif role == "assistant" and tool_uses:
         for tool_use in tool_uses:
-            call_obj = {"name": tool_use.get("name", ""), "arguments": tool_use.get("input", {})}
-            text += f"\n<tool_call>\n{json.dumps(call_obj, ensure_ascii=False)}\n</tool_call>"
+            call_obj = {"calls": [{
+                "operation": tool_use.get("name", ""),
+                "parameters": tool_use.get("input", {}),
+            }]}
+            call_json = escape_tool_control_markers(json.dumps(call_obj, ensure_ascii=False))
+            text += f"\n{ACTION_OPEN_MARKER}{call_json}{ACTION_CLOSE_MARKER}"
         text = text.strip()
 
     content = merge_content(text, normalize_content(attachments)) if attachments else text
@@ -451,6 +455,7 @@ def stream_genai_as_anthropic(
     token: str,
     config: Any,
     allowed_tool_names: Optional[set[str]] = None,
+    required_tool_call: bool = False,
     upstream_options: Optional[Dict[str, Any]] = None,
 ) -> Generator[str, None, None]:
     """Stream GenAI response in Anthropic Messages API format."""
@@ -678,9 +683,27 @@ def stream_genai_as_anthropic(
                 next_index += len(tool_calls)
                 stop_reason = "tool_use"
             else:
+                if required_tool_call:
+                    yield write_sse("error", {
+                        "type": "error",
+                        "error": {"type": "api_error", "message": "Required tool call was not returned; no action was emitted"},
+                    })
+                    return
                 logger.warning("Tool tag detected but parsing failed; emitting as text")
                 yield from emit_text(remaining if remaining is not None else tool_buffer)
         else:
+            if action_call_prefix_len(buffer):
+                yield write_sse("error", {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": "Action envelope marker was truncated; no action was emitted"},
+                })
+                return
+            if required_tool_call:
+                yield write_sse("error", {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": "Required tool call was not returned; no action was emitted"},
+                })
+                return
             yield from emit_text(buffer)
 
         yield from close_thinking_block()

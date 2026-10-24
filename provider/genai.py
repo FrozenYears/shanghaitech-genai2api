@@ -10,7 +10,7 @@ import requests
 from config import GENAI_URL, build_genai_headers, model_registry
 from errors import UpstreamError, make_error_chunk
 from provider.features import search_sources
-from tools.parsing import ToolCallParseError, extract_tool_calls, find_tool_call_open, tool_call_prefix_len
+from tools.parsing import ToolCallParseError, action_call_prefix_len, extract_tool_calls, find_tool_call_open, tool_call_prefix_len
 from tools.prompts import flatten_message_content, normalize_message_content
 
 logger = logging.getLogger(__name__)
@@ -346,7 +346,8 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config, upstre
 
 
 def stream_genai_response_with_tools(
-    chat_info, messages, model, max_tokens, config, allowed_tool_names=None, upstream_options=None
+    chat_info, messages, model, max_tokens, config, allowed_tool_names=None,
+    upstream_options=None, tool_choice_required=False,
 ):
     """带工具调用的 Chat Completions 流式响应。
 
@@ -480,12 +481,21 @@ def stream_genai_response_with_tools(
                 yield "data: [DONE]\n\n"
                 return
 
+            if tool_choice_required:
+                yield make_error_chunk("Required tool call was not returned; no action was emitted")
+                return
             logger.warning("Tool tag detected but parsing failed — emitting as text")
             yield emit({"content": remaining if remaining is not None else tool_buffer})
             yield make_chunk({}, finish_reason=_chat_finish_reason(event.get("finish_reason")))
             yield "data: [DONE]\n\n"
             return
 
+        if action_call_prefix_len(buffer):
+            yield make_error_chunk("Action envelope marker was truncated; no action was emitted")
+            return
+        if tool_choice_required:
+            yield make_error_chunk("Required tool call was not returned; no action was emitted")
+            return
         if buffer:
             yield emit({"content": buffer})
         if not sent_role:

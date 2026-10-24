@@ -4,9 +4,10 @@
 
 ### 工具调用可靠性
 
-- 将完整工具定义与调用格式提示放到当前 user 轮次，保留 system/developer 指令、历史结果和附件；明确工具由客户端执行，未收到工具结果前不得声称已执行。
-- 使用 JSON 字符串边界解析工具包裹，完整参数内的 `<think>`、DSML 与结束标签原样保留；拒绝不完整 JSON / 参数解析失败，避免静默交付部分参数。
-- 三种 API 遇到被截断或损坏的工具调用时不再发出可执行调用；非流式返回上游错误，流式返回错误事件。上游 SSE 未给 finish_reason 或 `[DONE]` 就提前 EOF 时也报错。
+- 将完整工具定义和 JSON Schema 放在当前 user 轮次，采用 `@@ACTION@@` JSON envelope 作为主调用协议；兼容既有 `<tool_call>` 与 DSML 输出及历史。保留 system/developer 指令、历史结果与附件，要求依赖型写入／编辑／读取分轮执行并回读核验。
+- 对 user/tool-history 中的 `<think>`、tool/DSML 标签及 action 分隔符使用可逆 JSON Unicode 转义，防止模型将文件内容误判为控制语法；解析后恢复原字符串。
+- 真实 ChatGLM 测试发现含 `<think>`、`</tool_call>` 的文件内容被模型改写，但模型仍声称写入成功。转义输入并改用 JSON envelope 后，真实 write → edit → read 回读逐字符匹配通过。普通文本或必需 `tool_choice` 未返回调用时，三种 API 都报错而非报告成功。
+- 拒绝不完整 action envelope、截断／损坏调用及提前结束的上游 SSE，不交付可执行的部分参数。保留 legacy XML/DSML parser compatibility。
 
 ### Relay 修复
 

@@ -76,14 +76,13 @@ def test_anthropic_messages_convert_tool_history_to_genai_promptable_messages():
     assert messages[0]["content"] == "You are Claude Code."
     assert any(
         message["role"] == "user"
-        and "<tools>" in message["content"]
-        and "<name>read_file</name>" in message["content"]
+        and '"name":"read_file"' in message["content"]
         for message in messages
     )
     assert any(
         message["role"] == "assistant"
-        and "<tool_call>" in message["content"]
-        and '"name": "read_file"' in message["content"]
+        and "@@ACTION@@" in message["content"]
+        and '"operation": "read_file"' in message["content"]
         for message in messages
     )
     assert any(

@@ -43,6 +43,10 @@ def chat_completions():
         tool_choice = req_data.get('tool_choice', None)
 
         has_tools = tools and len(tools) > 0
+        tool_choice_requires_call = bool(has_tools) and (
+            tool_choice == "required"
+            or isinstance(tool_choice, dict) and tool_choice.get("type") == "function"
+        )
         allowed_tool_names = {
             tool["function"]["name"]
             for tool in (tools or [])
@@ -71,6 +75,7 @@ def chat_completions():
                 gen = stream_genai_response_with_tools(
                     chat_info, messages, model, max_tokens, config, allowed_tool_names,
                     upstream_options=upstream_options,
+                    tool_choice_required=tool_choice_requires_call,
                 )
             else:
                 gen = stream_genai_response(
@@ -106,6 +111,12 @@ def chat_completions():
                 )
             else:
                 tool_calls, remaining_text = None, complete_content
+            if tool_choice_requires_call and not tool_calls:
+                return openai_error(
+                    "Required tool call was not returned",
+                    error_type="upstream_error",
+                    status=502,
+                )
 
             if tool_calls and finish_reason == "length":
                 return openai_error(

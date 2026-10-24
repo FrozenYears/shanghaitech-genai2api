@@ -13,6 +13,7 @@ from provider.anthropic import (
     COMPAT_THINKING_SIGNATURE,
     anthropic_allowed_tool_names,
     anthropic_messages_to_genai_format,
+    anthropic_tool_choice_to_openai,
     parse_tool_arguments,
     stream_genai_as_anthropic,
 )
@@ -61,6 +62,10 @@ def messages():
         # Convert Anthropic format to GenAI format
         _, genai_messages, model = anthropic_messages_to_genai_format(req_data, token)
         allowed_tool_names = anthropic_allowed_tool_names(req_data)
+        mapped_tool_choice = anthropic_tool_choice_to_openai(req_data.get('tool_choice'))
+        required_tool_call = bool(allowed_tool_names) and (
+            mapped_tool_choice == "required" or isinstance(mapped_tool_choice, dict)
+        )
 
         if not genai_messages:
             return anthropic_error("No valid messages provided", error_type="invalid_request_error", status=400)
@@ -75,6 +80,7 @@ def messages():
                 config,
                 allowed_tool_names=allowed_tool_names,
                 upstream_options=upstream_options,
+                required_tool_call=required_tool_call,
             )
             return Response(
                 stream_with_context(gen),
@@ -101,6 +107,7 @@ def messages():
                 config,
                 allowed_tool_names=allowed_tool_names,
                 upstream_options=upstream_options,
+                required_tool_call=required_tool_call,
             ):
                 event = None
                 data = None

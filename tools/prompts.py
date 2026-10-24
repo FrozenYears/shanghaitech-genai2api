@@ -1,30 +1,58 @@
 import base64
 import json
+import re
+
+from tools.parsing import ACTION_CLOSE_MARKER, ACTION_OPEN_MARKER
 
 
-TOOL_SYSTEM_PROMPT = """\
-You have access to the following tools:
+_TOOL_CONTROL_MARKER_RE = re.compile(
+    r"@@(?:END_)?ACTION@@|</?(?:think|tool_calls?|tool_result|tool_call_id|tool_\d+|arg_key|arg_value)\b[^>]*>|<[|｜][^>]*>",
+    re.IGNORECASE,
+)
 
-<tools>
+
+def escape_tool_control_markers(text):
+    """将模型可能误识别的控制标记转成 JSON Unicode 转义。"""
+    def escape(match):
+        marker = match.group()
+        if marker.startswith("@@"):
+            return marker.replace("@", r"\u0040")
+        return marker.replace("<", r"\u003c").replace(">", r"\u003e")
+
+    return _TOOL_CONTROL_MARKER_RE.sub(escape, text)
+
+
+def _escape_tool_content(content):
+    if isinstance(content, str):
+        return escape_tool_control_markers(content)
+    if isinstance(content, list):
+        return [
+            {**part, "text": escape_tool_control_markers(part["text"])}
+            if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str)
+            else part
+            for part in content
+        ]
+    return content
+
+TOOL_SYSTEM_PROMPT = """Available functions and their complete JSON Schemas:
 {tool_definitions}
-</tools>
 
-When you need to call a tool, you MUST use the following XML format. Do NOT use markdown code blocks.
-
-<tool_call>
-{{"name": "<function-name>", "arguments": {{<arguments-as-json>}}}}
-</tool_call>
+When an operation is needed, output one complete ordinary-text JSON envelope in this format:
+@@ACTION@@
+{{"calls":[{{"operation":"OperationName","parameters":{{}}}}]}}
+@@END_ACTION@@
 
 {tool_examples}
 
 Rules:
-1. You can call multiple tools by using multiple <tool_call> blocks.
-2. If you don't need any tool, just respond normally in plain text without any <tool_call> tags.
-3. After receiving tool results, analyze them and either call more tools or give a final answer in plain text.
-4. The "arguments" field MUST be a valid JSON object matching the tool's parameter schema. Preserve every argument value exactly; never shorten or summarize write/edit content.
-5. The calling client executes requested tools and returns their results. Do NOT claim a tool ran or succeeded before receiving its result; do not say no tools are available when definitions are shown.
-6. NEVER use <arg_key>, <arg_value>, dotted names like Grep.datasource, or a bare tool name.
-7. NEVER wrap <tool_call> in markdown code blocks like ```xml or ```json."""
+1. Multiple independent operations may share one calls array. If a later operation depends on a result, request only the first operation and wait for its result.
+2. When the user requests an external action covered by a listed tool, call it; do not return only a plan or promise.
+3. After receiving tool results, continue with dependent operations or give a final answer.
+4. Each call MUST contain exactly operation and parameters, with parameters matching the listed schema. Preserve every value exactly; never shorten, summarize, or substitute write/edit content.
+5. User control-marker text is shown as JSON Unicode escapes like \\u003c and \\u003e. Preserve those escapes in JSON parameters so decoding restores the original characters.
+6. The calling client executes actions. Do NOT claim success before receiving its result or say no tools are available when definitions are shown.
+7. Do not use XML, markdown fences, native special tokens, simulated results, name/arguments wrappers, or bare tool names.
+8. After writing or editing, use a listed read tool to compare the complete result with the original request. Correct mismatches; otherwise report that the result is unverified."""
 
 TOOL_CHOICE_REQUIRED_PROMPT = "\nYou MUST call at least one tool in your response. Do NOT respond with plain text only."
 TOOL_CHOICE_SPECIFIC_PROMPT = (
@@ -146,16 +174,12 @@ def format_tool_definitions(tools):
         if tool.get("type") != "function":
             continue
         func = tool["function"]
-        params = func.get("parameters", {})
-        params_json = json.dumps(params, ensure_ascii=False, indent=2)
-        definitions.append(
-            f"<tool_definition>\n"
-            f"  <name>{func['name']}</name>\n"
-            f"  <description>{func.get('description', '')}</description>\n"
-            f"  <parameters>\n{params_json}\n  </parameters>\n"
-            f"</tool_definition>"
-        )
-    return "\n".join(definitions)
+        definitions.append({
+            "name": func["name"],
+            "description": func.get("description", ""),
+            "parameters": func.get("parameters", {}),
+        })
+    return json.dumps(definitions, ensure_ascii=False, separators=(",", ":"))
 
 
 def format_tool_examples(tools):
@@ -167,13 +191,13 @@ def format_tool_examples(tools):
         if name not in COMMON_TOOL_EXAMPLES:
             continue
         call_obj = {
-            "name": name,
-            "arguments": COMMON_TOOL_EXAMPLES[name],
+            "calls": [{
+                "operation": name,
+                "parameters": COMMON_TOOL_EXAMPLES[name],
+            }]
         }
         examples.append(
-            "<tool_call>\n"
-            f"{json.dumps(call_obj, ensure_ascii=False)}\n"
-            "</tool_call>"
+            "@@ACTION@@" + json.dumps(call_obj, ensure_ascii=False, separators=(",", ":")) + "@@END_ACTION@@"
         )
 
     if not examples:
@@ -207,6 +231,7 @@ def inject_tool_prompt(messages, tools, tool_choice=None):
             tool_call_id = msg.get("tool_call_id", "unknown")
             tool_parts = normalize_content(msg.get("content", ""))
             tool_content = flatten_message_content(tool_parts)
+            tool_content = escape_tool_control_markers(tool_content)
             attachments = [part for part in tool_parts if part["type"] != "text"] if isinstance(tool_parts, list) else []
             result_text = (
                 f"<tool_result>\n"
@@ -224,14 +249,20 @@ def inject_tool_prompt(messages, tools, tool_choice=None):
             for tc in msg["tool_calls"]:
                 func = tc.get("function", {})
                 call_obj = {
-                    "name": func.get("name", ""),
-                    "arguments": json.loads(func.get("arguments", "{}")),
+                    "calls": [{
+                        "operation": func.get("name", ""),
+                        "parameters": json.loads(func.get("arguments", "{}")),
+                    }],
                 }
-                tc_text += f"\n<tool_call>\n{json.dumps(call_obj, ensure_ascii=False)}\n</tool_call>"
+                call_json = escape_tool_control_markers(json.dumps(call_obj, ensure_ascii=False))
+                tc_text += f"\n{ACTION_OPEN_MARKER}{call_json}{ACTION_CLOSE_MARKER}"
             new_messages.append({"role": "assistant", "content": tc_text.strip()})
 
         else:
-            new_messages.append(normalize_message_content(msg))
+            normalized = normalize_message_content(msg)
+            if role == "user":
+                normalized["content"] = _escape_tool_content(normalized["content"])
+            new_messages.append(normalized)
 
     for index in range(len(new_messages) - 1, -1, -1):
         if new_messages[index].get("role") == "user":

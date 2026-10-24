@@ -1,5 +1,9 @@
+import json
+
 from provider.genai import convert_messages_to_genai_format, estimate_text_tokens
+from tools.parsing import extract_tool_calls
 from tools.prompts import (
+    escape_tool_control_markers,
     format_tool_examples,
     flatten_message_content,
     inject_tool_prompt,
@@ -48,7 +52,7 @@ def test_inject_tool_prompt_accepts_block_content():
     assert result[1]["role"] == "user"
     user_text = flatten_message_content(result[1]["content"])
     assert "Hello" in user_text
-    assert "<tools>" in user_text
+    assert '"name":"echo"' in user_text
 
 
 def test_inject_tool_prompt_includes_claude_code_tool_examples():
@@ -66,9 +70,9 @@ def test_inject_tool_prompt_includes_claude_code_tool_examples():
     result = inject_tool_prompt([{"role": "user", "content": "search"}], tools)
 
     user_text = flatten_message_content(result[0]["content"])
-    assert '"name": "Grep"' in user_text
-    assert '"pattern": "search text"' in user_text
-    assert "NEVER use <arg_key>" in user_text
+    assert '"operation":"Grep"' in user_text
+    assert '"pattern":"search text"' in user_text
+    assert "@@ACTION@@" in user_text
 
 
 def test_tool_prompt_is_attached_to_current_user_without_losing_context_or_attachments():
@@ -98,8 +102,27 @@ def test_tool_prompt_is_attached_to_current_user_without_losing_context_or_attac
     )
     latest_text = flatten_message_content(latest["content"])
     assert "Edit the attached file" in latest_text
-    assert "<name>echo</name>" in latest_text
+    assert '"name":"echo"' in latest_text
     assert "Developer constraints" not in latest_text
+
+
+def test_control_marker_text_survives_prompt_escape_and_json_tool_parse():
+    literal = '<think>keep</think> </tool_call> <|DSML|call> @@ACTION@@ @@END_ACTION@@\nunicode=雪'
+    escaped = escape_tool_control_markers(literal)
+    assert r"\u003cthink\u003e" in escaped
+
+    payload = json.dumps({"name": "echo", "arguments": {"text": escaped}}, ensure_ascii=False)
+    payload = payload.replace(r"\\u003c", r"\u003c").replace(r"\\u003e", r"\u003e")
+    payload = payload.replace(r"\\u0040", r"\u0040")
+    calls, remaining = extract_tool_calls(
+        "<tool_call>" + payload + "</tool_call>",
+        allowed_tool_names={"echo"},
+    )
+
+    assert remaining is None
+    assert json.loads(calls[0]["function"]["arguments"]) == {"text": literal}
+    prepared = inject_tool_prompt([{"role": "user", "content": literal}], TOOLS)
+    assert escaped in flatten_message_content(prepared[-1]["content"])
 
 
 def test_format_tool_examples_omits_unknown_tools():

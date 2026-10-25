@@ -23,13 +23,14 @@ logger = logging.getLogger(__name__)
 messages_bp = Blueprint('messages', __name__)
 
 
-def anthropic_error(message: str, error_type: str = "api_error", code: str = "internal_error", status: int = 500) -> tuple:
+def anthropic_error(message: str, error_type: str = "api_error", code: str | None = None, status: int = 500) -> tuple:
     """Return an Anthropic-style error response."""
     return jsonify({
         "type": "error",
         "error": {
             "type": error_type,
             "message": message,
+            **({"code": code} if code else {}),
         }
     }), status
 
@@ -124,6 +125,7 @@ def messages():
                     return anthropic_error(
                         data.get("error", {}).get("message", "Upstream error"),
                         error_type="api_error",
+                        code=data.get("error", {}).get("code"),
                         status=502,
                     )
                 if event == "content_block_start" and data.get("content_block", {}).get("type") == "tool_use":
@@ -192,7 +194,7 @@ def messages():
     except ValueError as e:
         return anthropic_error(str(e), error_type="invalid_request_error", status=400)
     except UpstreamError as e:
-        return anthropic_error(str(e), error_type="api_error", status=502)
+        return anthropic_error(str(e), error_type="api_error", code=e.code, status=502)
     except Exception as e:
         logger.exception("[%s] Unhandled error", request_id)
         return anthropic_error(

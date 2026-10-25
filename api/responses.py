@@ -152,6 +152,7 @@ def responses():
                 return responses_error(
                     event_data.get("message", "Upstream error"),
                     error_type="api_error",
+                    code=event_data.get("code"),
                     status=502,
                 )
             if event_name in ("response.completed", "response.incomplete"):
@@ -164,7 +165,7 @@ def responses():
     except ValueError as e:
         return responses_error(str(e), status=400)
     except UpstreamError as e:
-        return responses_error(str(e), error_type="api_error", status=502)
+        return responses_error(str(e), error_type="api_error", code=e.code, status=502)
     except Exception as e:
         logger.exception("[%s] Unhandled error", request_id)
         return responses_error(str(e), error_type="api_error", status=500)

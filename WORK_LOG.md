@@ -1,7 +1,14 @@
 # 本地工作日志
 
-## 当前状态：正式双跳部署与 omp 验收（2026-10-25）
+## 当前状态：持续工作故障根因修复（2026-10-25）
 
+- 本轮 checkpoint：根`75afcfc`、relay`9e0c6e6`。真实网页SSE已复现零正文/零思考/零调用却正常stop；未发现完整内容被relay丢掉的证据，网页内部成因仍不可见。确认第一跳空成功和relay覆盖具体错误是代理缺陷。
+- 第一跳只对工具请求的完全空正常完成发起一次保留历史的明确继续，禁止重放已有增量、坏参数、断流或截断；持续空与仅思考回答不伪报成功。两跳统一保留安全message/type/code，Schema错误不回显参数值；没有放宽parser、猜参数或改变模型。
+- 回归根305 passed、relay89 passed/259 subtests。实际旧失败历史副本续作：DeepSeek任务10–12独立50断言通过，Kimi任务2–4独立20断言通过；录制空帧故障注入后接真实GenAI，预算阶段46断言通过。额外DeepSeek取证两次自然空stop自动恢复，后遇坏JSON安全拒绝，独立检查还发现模型预算实现错误，未将其算作业务成功。
+- 正式服务本轮已再次重启：第一跳Python PID88780、relay Python PID68920，服务句柄为`GenaiFirstHopRepaired`、`GenaiRelayRepaired`，均persistent。重启后两模型在原31110均通过真实omp write/read。下面旧验收PID与数字是历史记录，不是现行进程。
+- 用户选择保留本轮六组关键取证，已清理临时采集脚本、隔离模型/配置缓存、初期不忠实重放与两个正式端口短试点；保留路径列在`validation/relay-rootcause-2026-10-25.json`。前一轮两个正式长测目录未动。
+
+## 上一阶段：正式双跳部署与 omp 验收
 - 用户授权大量重构；根仓库和 relay 均新建 `feat/native-first-streaming`。重构前 checkpoint：根 `e682010`（保存用户已有 CHANGELOG 修改）、relay `5d3bd12`。
 - 第一跳统一工具交付边界：结构化调用优先，严格 action/XML/DSML/Kimi 解析兜底；删除裸 JSON、文档示例及损坏参数的猜测执行。完整 Schema、ID、choice、parallel、原子批次统一校验。
 - relay 默认 native，保留 tools/roles/history 与调用 ID；text 必须显式选择。支持 custom text 和 namespace；grammar、服务端状态引用等不支持能力明确拒绝。

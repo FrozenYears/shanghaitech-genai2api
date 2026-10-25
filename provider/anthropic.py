@@ -354,7 +354,7 @@ def stream_genai_as_anthropic(
             yield sse("content_block_stop", {"type": "content_block_stop", "index": index})
 
     source = iter_genai_stream(chat_info, history, model, max_tokens, config, token=token,
-                               upstream_options=upstream_options)
+                               upstream_options=upstream_options, recover_empty=bool(tools))
     events = validated_events(source, tools, tool_choice, parallel_tool_calls)
     try:
         for event in events:
@@ -362,7 +362,10 @@ def stream_genai_as_anthropic(
                 yield sse("ping", {"type": "ping"})
                 continue
             if event["type"] == "error":
-                yield sse("error", {"type": "error", "error": {"type": "api_error", "message": event["message"]}})
+                yield sse("error", {"type": "error", "error": {
+                    "type": "api_error", "message": event["message"],
+                    "code": event.get("code", "upstream_error"),
+                }})
                 return
             if event["type"] == "delta":
                 for field, target in (("reasoning", "thinking"), ("content", "text")):

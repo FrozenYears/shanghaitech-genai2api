@@ -87,7 +87,7 @@ def chat_completions():
                 )
             except UpstreamError as e:
                 logger.warning("[%s] upstream error: %s", request_id, e)
-                return openai_error(str(e), error_type="upstream_error", status=502)
+                return openai_error(str(e), error_type="upstream_error", code=e.code, status=502)
 
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
@@ -131,7 +131,7 @@ def chat_completions():
     except ValueError as e:
         return openai_error(str(e), error_type="invalid_request_error", status=400)
     except UpstreamError as e:
-        return openai_error(str(e), error_type="upstream_error", status=502)
+        return openai_error(str(e), error_type="upstream_error", code=e.code, status=502)
     except Exception as e:
         logger.exception("[%s] Unhandled error", request_id)
         return openai_error(

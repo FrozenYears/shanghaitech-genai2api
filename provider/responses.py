@@ -508,7 +508,8 @@ def stream_genai_as_responses(
                 yield ev("response.output_item.done", {"output_index": index, "item": item})
                 output_items.append(item)
 
-    source = iter_genai_stream(chat_info, history_messages, model, max_tokens, config, upstream_options=upstream_options)
+    source = iter_genai_stream(chat_info, history_messages, model, max_tokens, config,
+                               upstream_options=upstream_options, recover_empty=bool(tools))
     events = validated_events(source, tools, tool_choice, parallel_tool_calls)
     try:
         for event in events:
@@ -516,7 +517,7 @@ def stream_genai_as_responses(
                 yield ": keep-alive\n\n"
                 continue
             if event["type"] == "error":
-                yield ev("error", {"code": None, "message": event["message"], "param": None})
+                yield ev("error", {"code": event.get("code", "upstream_error"), "message": event["message"], "param": None})
                 return
             if event["type"] == "delta":
                 reasoning = event.get("reasoning")

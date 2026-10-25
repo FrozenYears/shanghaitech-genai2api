@@ -1,0 +1,151 @@
+{
+  "date": "2026-10-25",
+  "scope": "GenAI webpage only; native relay retained; no independent official API",
+  "baseline_implementation": {"root": "a7b3186", "relay": "44639ec"},
+  "confirmed_findings": [
+    {
+      "finding": "Natural empty generation originates in the school webpage SSE",
+      "source": ".validation-runtime/rootcause-investigation/exact-deepseek-pro-1792912357951341500",
+      "live_empty_responses": ["web-1.jsonl", "web-4.jsonl"],
+      "content_characters": 0,
+      "reasoning_characters": 0,
+      "tool_calls": 0,
+      "terminal_finish_reason": "stop",
+      "sanitized_shape_projection": [
+        {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]},
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+      ],
+      "limit": "This recaptures the same failure class with real omp and failed-history copies; historical failures without raw SSE cannot all be retroactively assigned the same internal cause."
+    },
+    {
+      "finding": "First hop previously treated empty stop as a successful completion; relay rejected it only later",
+      "fix": "First-hop visible-answer validation and exactly one continuation for fully empty normal stops on tool-enabled requests"
+    },
+    {
+      "finding": "Relay erased structured first-hop failure details",
+      "old_error": "First-hop service returned a stream error",
+      "fix": "Safe message/type/code retained for all protocols, streaming and HTTP failures, with bounded error bodies and credential masking",
+      "limit": "The old Kimi stream failures cannot now be retrospectively distinguished as validation, parsing, or network faults."
+    }
+  ],
+  "protocol_ablation": {
+    "source": ".validation-runtime/rootcause-investigation/protocol-1792912716046771400",
+    "reported_platform_maxToken": 1048576,
+    "variants": [
+      {"variant": "original", "content_characters": 2484, "seconds": 293.375},
+      {"variant": "unique_chatGroupId", "content_characters": 456, "seconds": 3.188},
+      {"variant": "maxToken_30000", "content_characters": 2422, "seconds": 11.953},
+      {"variant": "thinking_false", "content_characters": 0, "seconds": 3.797}
+    ],
+    "conclusion": "Single stochastic variants do not isolate a causal field. Original input can succeed again; disabling thinking does not eliminate empty stop. No concurrency serialization, session nonce, budget clamp, or global thinking change was shipped."
+  },
+  "recovery_invariants": {
+    "enabled_only_for_tool_requests": true,
+    "requires_no_content_no_reasoning_no_tool_calls": true,
+    "requires_normal_stop": true,
+    "maximum_extra_generations": 1,
+    "history_preserved": true,
+    "next_question": "Original question plus an explicit continuation instruction; not an identical blind replay",
+    "never_recovers": ["reasoning already emitted", "visible text already emitted", "partial or malformed calls", "schema failures", "transport errors", "length truncation"],
+    "second_empty": "upstream_empty_response",
+    "client_tool_execution_replayed": false
+  },
+  "regressions": {"root_passed": 305, "relay_passed": 89, "relay_subtests_passed": 259},
+  "live_failure_history_rechecks": [
+    {
+      "model": "deepseek-pro",
+      "source": ".validation-runtime/rootcause-investigation/exact-deepseek-pro-1792912969938938900",
+      "tasks": [10, 11, 12],
+      "all_user_turns_completed": true,
+      "live_web_requests": 13,
+      "actual_tool_executions": 24,
+      "final_independent_assertions": 50,
+      "final_independent_verification_passed": true,
+      "note": "No natural empty response occurred in this particular three-task repaired sample; it is not evidence that platform empties have ceased."
+    },
+    {
+      "model": "Kimi-k3",
+      "source": ".validation-runtime/rootcause-investigation/exact-Kimi-k3-1792912969936689000",
+      "tasks": [2, 3, 4],
+      "all_user_turns_completed": true,
+      "live_web_requests": 10,
+      "final_independent_assertions": 20,
+      "final_independent_verification_passed": true
+    }
+  ],
+  "recorded_fault_injection": {
+    "source": ".validation-runtime/rootcause-investigation/exact-deepseek-pro-1792913330508025200",
+    "first_response": "Previously captured real empty SSE recording, deliberately injected",
+    "following_responses": "Four real GenAI webpage requests",
+    "only_continuation_request_index": 1,
+    "same_history_before_and_after_empty": true,
+    "actual_omp_tool_executions": 8,
+    "agent_completed": true,
+    "final_independent_assertions": 46,
+    "final_independent_verification_passed": true,
+    "not_a_natural_endurance_success": true
+  },
+  "formal_deployment": {
+    "first_hop_port": 31100,
+    "relay_port": 31110,
+    "first_hop_python_pid": 88780,
+    "relay_python_pid": 68920,
+    "first_hop_service": "GenaiFirstHopRepaired",
+    "relay_service": "GenaiRelayRepaired",
+    "left_running": true,
+    "real_omp_write_read_pilots": [
+      {"model": "deepseek-pro", "passed": true, "seconds": 3.891},
+      {"model": "Kimi-k3", "passed": true, "seconds": 18.969}
+    ]
+  },
+  "extended_natural_recovery_trace": {
+    "model": "deepseek-pro",
+    "source": ".validation-runtime/rootcause-investigation/exact-deepseek-pro-1792913386484366900",
+    "live_web_requests": 22,
+    "assistant_responses": 20,
+    "actual_tool_executions": 37,
+    "naturally_empty_request_indexes": [15, 17],
+    "continuation_request_indexes": [16, 18],
+    "continuation_output_characters": [2220, 346],
+    "fault_injection": false,
+    "agent_turns_completed_at_tasks": [10, 11, 12, 13],
+    "task14_stopped_safely": {
+      "message": "Action envelope contains invalid or incomplete JSON",
+      "raw_model_json_error": "Expecting property name enclosed in double quotes",
+      "line": 1,
+      "column": 724,
+      "final_envelope_delimiter_present": true,
+      "invalid_batch_executed": false
+    },
+    "independent_business_verification": {
+      "stage": 13,
+      "assertions": 52,
+      "passed": false,
+      "failed_case": "budget_gross_expenses",
+      "actual": {"ok": false, "error": "invalid_row"}
+    },
+    "interpretation": "Two real empty stops recovered without a user restart. This investigation trace is not a passed business campaign: it later rejected genuinely malformed JSON, and independent verification found a model-generated business error."
+  },
+  "retention": {
+    "decision": "User approved keeping six core evidence groups; temporary scripts, isolated caches, preliminary replays and short pilots were removed",
+    "retained_directories": [
+      ".validation-runtime/rootcause-investigation/exact-deepseek-pro-1792912357951341500",
+      ".validation-runtime/rootcause-investigation/protocol-1792912716046771400",
+      ".validation-runtime/rootcause-investigation/exact-deepseek-pro-1792912969938938900",
+      ".validation-runtime/rootcause-investigation/exact-Kimi-k3-1792912969936689000",
+      ".validation-runtime/rootcause-investigation/exact-deepseek-pro-1792913330508025200",
+      ".validation-runtime/rootcause-investigation/exact-deepseek-pro-1792913386484366900"
+    ],
+    "earlier_formal_endurance_directories_unchanged": true
+  },
+  "excluded_evidence": [
+    "Initial hand-built schema replays omitted omp's required i field and caused artificial schema errors; they are not used to diagnose the original failures",
+    "Delimiter collisions and unclosed Markdown quotation risks had no observed triggering evidence; no permissive parsing was added"
+  ],
+  "external_reference": "https://github.com/openai/openai-python/blob/main/src/openai/_streaming.py",
+  "limits": [
+    "The school inference service's internal reason for empty stop remains outside available evidence",
+    "Typed errors and bounded recovery do not prove arbitrary-hour unattended stability",
+    "Rechecks use copies of retained failed sessions and projects; they are not matched old/new end-to-end endurance A/B tests"
+  ]
+}

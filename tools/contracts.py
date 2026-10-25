@@ -13,6 +13,12 @@ from referencing.exceptions import Unresolvable
 class ToolContractError(ValueError):
     """请求或模型调用违反工具协议；不得交付部分调用。"""
 
+    code = "tool_contract_error"
+
+    def __init__(self, message, *, code=None):
+        super().__init__(message)
+        self.code = code or type(self).code
+
 
 def _unique_object(pairs):
     result = {}
@@ -142,8 +148,20 @@ def validate_tool_calls(calls, tools, tool_choice=None, parallel_tool_calls=True
         try:
             serialized = json.dumps(arguments, ensure_ascii=False, allow_nan=False)
             validators[name].validate(arguments)
-        except (ValueError, ValidationError, Unresolvable, RecursionError) as exc:
-            raise ToolContractError("Tool arguments violate the schema for " + name) from exc
+        except ValidationError as exc:
+            # 只报告约束/字段名，不把文件正文或命令等参数值写进错误。
+            path = ".".join(str(part) for part in exc.absolute_path) or "parameters"
+            missing = ""
+            if exc.validator == "required" and isinstance(exc.instance, dict):
+                names = [key for key in exc.validator_value if key not in exc.instance]
+                missing = "; missing fields: " + ", ".join(names)
+            raise ToolContractError(
+                f"Tool {name!r} arguments fail {exc.validator} at {path}{missing}"[:512],
+                code="tool_arguments_invalid",
+            ) from exc
+        except (ValueError, Unresolvable, RecursionError) as exc:
+            raise ToolContractError("Tool arguments could not be validated for " + name,
+                                    code="tool_arguments_invalid") from exc
         call_id = call.get("id")
         if call_id is None:
             call_id = "call_" + uuid.uuid4().hex[:24]

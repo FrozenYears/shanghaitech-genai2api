@@ -3,6 +3,7 @@ import queue
 import socket
 import threading
 
+from errors import UpstreamError
 from tools.contracts import ToolContractError, validate_tool_calls
 from tools.parsing import extract_tool_calls, find_tool_call_open, tool_call_prefix_len
 
@@ -103,6 +104,7 @@ def validated_events(source, tools=None, tool_choice=None, parallel_tool_calls=T
     """先流式交付安全正文；工具批次在完整结束并校验后才可见。"""
     buffer = ""
     captured = False
+    visible_text = False
     source_parts = []
     try:
         for event in source:
@@ -122,6 +124,7 @@ def validated_events(source, tools=None, tool_choice=None, parallel_tool_calls=T
                 if not content:
                     continue
                 if not tools:
+                    visible_text = visible_text or bool(content.strip())
                     yield {"type": "delta", "content": content}
                     continue
                 buffer += content
@@ -130,6 +133,7 @@ def validated_events(source, tools=None, tool_choice=None, parallel_tool_calls=T
                 position = find_tool_call_open(buffer)
                 if position >= 0:
                     if position:
+                        visible_text = visible_text or bool(buffer[:position].strip())
                         yield {"type": "delta", "content": buffer[:position]}
                     buffer = buffer[position:]
                     captured = True
@@ -137,6 +141,7 @@ def validated_events(source, tools=None, tool_choice=None, parallel_tool_calls=T
                     prefix = tool_call_prefix_len(buffer)
                     safe, buffer = (buffer[:-prefix], buffer[-prefix:]) if prefix else (buffer, "")
                     if safe:
+                        visible_text = visible_text or bool(safe.strip())
                         yield {"type": "delta", "content": safe}
                 continue
             if kind != "done":
@@ -153,15 +158,17 @@ def validated_events(source, tools=None, tool_choice=None, parallel_tool_calls=T
             if calls and event.get("finish_reason") == "length":
                 raise ToolContractError("Tool call output was truncated; no tool call was emitted")
             calls = validate_tool_calls(calls or [], tools or [], tool_choice, parallel_tool_calls)
+            if not calls and not visible_text and not (remaining or "").strip() and event.get("finish_reason") != "length":
+                raise UpstreamError("Upstream completed without an answer or tool call", code="upstream_empty_response")
             if remaining:
                 yield {"type": "delta", "content": remaining}
             for content in source_parts:
                 yield {"type": "delta", "content": content}
             yield {**event, "tool_calls": calls}
             return
-        yield {"type": "error", "message": "Upstream stream ended before completion"}
-    except ValueError as exc:
-        yield {"type": "error", "message": str(exc)}
+        yield {"type": "error", "message": "Upstream stream ended before completion", "code": "upstream_stream_incomplete"}
+    except (ValueError, UpstreamError) as exc:
+        yield {"type": "error", "message": str(exc), "code": getattr(exc, "code", "tool_call_parse_error")}
     finally:
         close = getattr(source, "close", None)
         if close is not None:

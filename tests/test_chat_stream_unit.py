@@ -126,7 +126,7 @@ def test_upstream_stream_without_finish_or_done_is_an_error(monkeypatch):
     events = list(genai.iter_genai_stream("question", [], "chatglm", 100, DummyConfig()))
 
     assert [event["type"] for event in events] == ["delta", "error"]
-    assert events[-1]["message"] == "Upstream stream ended before completion"
+    assert events[-1]["code"] == "upstream_stream_incomplete"
 
 
 def test_chat_first_role_precedes_upstream_request(monkeypatch):

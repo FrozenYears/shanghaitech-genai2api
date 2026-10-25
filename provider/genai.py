@@ -67,11 +67,47 @@ def split_history_messages(messages):
     return normalized
 
 
-def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token=None, upstream_options=None):
-    """增量正文/思考；done 携带完整原生 tool_calls，错误时不交付调用。"""
-    yield from heartbeat_events(lambda control: _iter_genai_stream(
-        chat_info, history_messages, model, max_tokens, config, token, upstream_options, control,
-    ))
+def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token=None, upstream_options=None,
+                      recover_empty=False):
+    """增量正文/思考；仅工具请求的完全空 stop 允许一次显式继续。"""
+    def source(control):
+        question = chat_info
+        for attempt in range(2 if recover_empty else 1):
+            emitted = False
+            completed = False
+            for event in _iter_genai_stream(question, history_messages, model, max_tokens, config,
+                                           token, upstream_options, control):
+                if event["type"] == "delta" and (event.get("content") or event.get("reasoning")):
+                    emitted = True
+                if event["type"] == "error":
+                    yield event
+                    return
+                if event["type"] == "done":
+                    completed = True
+                    if (recover_empty and not emitted and not event.get("tool_calls")
+                            and event.get("finish_reason") == "stop"):
+                        if attempt == 0 and not control.cancelled.is_set():
+                            # 没有可见增量或调用被交付。改变提问请求“继续”，不是重放坏参数/工具。
+                            question = chat_info + (
+                                "\n\n上一轮生成已结束，但没有返回任何正文、思考或工具调用，"
+                                "没有新的工具调用交付给客户端。请根据完整历史和当前任务继续："
+                                "需要操作时给出完整合法调用，否则给出最终答复。"
+                                "历史工具结果已经实际执行，不要重复已完成的操作，也不要模拟结果。"
+                            )
+                            logger.warning("GenAI completed empty model=%s; requesting one continuation", model)
+                            break
+                        yield {"type": "error", "code": "upstream_empty_response",
+                               "message": "Upstream completed empty after one continuation; no tool call was delivered"}
+                        return
+                    yield event
+                    return
+                yield event
+            else:
+                if not completed:
+                    yield {"type": "error", "message": "Upstream stream ended before completion",
+                           "code": "upstream_stream_incomplete"}
+                return
+    yield from heartbeat_events(source)
 
 
 def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token, upstream_options, control):
@@ -243,7 +279,7 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
                 break
 
         if not stream_ended:
-            yield {"type": "error", "message": "Upstream stream ended before completion"}
+            yield {"type": "error", "message": "Upstream stream ended before completion", "code": "upstream_stream_incomplete"}
             return
         calls = [native_calls[index] for index in sorted(native_calls)]
         if calls:
@@ -282,7 +318,7 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
 
     except Exception as e:
         logger.exception("Error in iter_genai_stream")
-        yield {"type": "error", "message": str(e)}
+        yield {"type": "error", "message": str(e), "code": getattr(e, "code", "upstream_stream_error")}
     finally:
         if response is not None:
             response.close()
@@ -296,10 +332,11 @@ def collect_genai_response(chat_info, messages, model, max_tokens, config, upstr
     finish_reason = None
     tool_calls = []
     history = split_history_messages(messages)
-    source = iter_genai_stream(chat_info, history, model, max_tokens, config, upstream_options=upstream_options)
+    source = iter_genai_stream(chat_info, history, model, max_tokens, config, upstream_options=upstream_options,
+                              recover_empty=bool(tools))
     for event in validated_events(source, tools, tool_choice, parallel_tool_calls):
         if event["type"] == "error":
-            raise UpstreamError(event["message"])
+            raise UpstreamError(event["message"], code=event.get("code", "upstream_error"))
         if event["type"] == "delta":
             if event.get("content"):
                 content_parts.append(event["content"])
@@ -335,14 +372,14 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config, upstre
 
     yield chunk({"role": "assistant", "content": ""})
     source = iter_genai_stream(chat_info, split_history_messages(messages), model, max_tokens, config,
-                               upstream_options=upstream_options)
+                               upstream_options=upstream_options, recover_empty=bool(tools))
     events = validated_events(source, tools, tool_choice, parallel_tool_calls)
     try:
         for event in events:
             if event["type"] == "heartbeat":
                 yield ": keep-alive\n\n"
             elif event["type"] == "error":
-                yield make_error_chunk(event["message"])
+                yield make_error_chunk(event["message"], code=event.get("code", "upstream_error"))
                 return
             elif event["type"] == "delta":
                 delta = {}

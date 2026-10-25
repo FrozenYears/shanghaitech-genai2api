@@ -11,6 +11,8 @@ from tools.kimi import parse_kimi_output
 class ToolCallParseError(ToolContractError):
     """工具调用正文不完整或无法无损解析。"""
 
+    code = "tool_call_parse_error"
+
 
 DSML_OPEN_PREFIX_FULLWIDTH = "<｜DSML｜"
 DSML_OPEN_PREFIX_ASCII = "<|DSML|"

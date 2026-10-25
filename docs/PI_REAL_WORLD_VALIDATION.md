@@ -14,7 +14,7 @@
 - Pi 0.85.1 会无条件注册自身附带的 `llama.cpp` 管理模块，即使设置 `--no-extensions`，RPC `get_commands` 仍列出 `/llama`。核对实现后确认它只注册 provider 和管理命令，没有注册模型工具或消息事件处理；本次没有选择该 provider 或执行该命令。所有用户安装的插件均未加载，不能把此情形描述成“扩展对象数量严格为零”。
 - 本地观察器仅记录请求字段和内容类型，然后原样转发给 31100，不添加搜索/思考参数、不改写回答。所有样本为本次自建，提示词中没有给出图片数字或发票答案。
 
-隔离清单见 [isolation.json](validation/pi-2026-09-17/isolation.json)，请求字段证据见 [requests.jsonl](validation/pi-2026-09-17/requests.jsonl)。
+隔离清单见 [isolation.json](../validation/pi-2026-09-17/isolation.json)，请求字段证据见 [requests.jsonl](../validation/pi-2026-09-17/requests.jsonl)。
 
 ## 实际结果
 
@@ -47,7 +47,7 @@ PDF 显式命令的成功证明了“Pi 原生 shell → 代理上传解析 → 
 
 ## 无用户插件的复现配置
 
-[models.example.json](validation/pi-2026-09-17/models.example.json) 已将地址设为真实代理的 31100 端口，不依赖本轮观察器。它是独立示例，没有覆盖用户全局配置。将其作为独立 Pi 配置目录中的 `models.json`，通过环境变量 `PI_GENAI_API_KEY` 提供代理密钥；未启用代理鉴权时，可设任意占位值。
+[models.example.json](../validation/pi-2026-09-17/models.example.json) 已将地址设为真实代理的 31100 端口，不依赖本轮观察器。它是独立示例，没有覆盖用户全局配置。将其作为独立 Pi 配置目录中的 `models.json`，通过环境变量 `PI_GENAI_API_KEY` 提供代理密钥；未启用代理鉴权时，可设任意占位值。
 
 模型配置中：
 
@@ -65,7 +65,7 @@ pi --no-extensions --no-skills --no-prompt-templates --no-themes \
    --mode json '仓库红、蓝、绿箱共41箱；红比蓝多5，绿比蓝少3，各有多少箱？'
 ```
 
-PDF 的可行路径是在 Pi 中显式执行普通脚本，再提问。归档的 [document_query.py](validation/pi-2026-09-17/document_query.py) 只依赖 Python 标准库、直接调用 31100；它不是 Pi 插件，也不在本地提取 PDF 文本：
+PDF 的可行路径是在 Pi 中显式执行普通脚本，再提问。归档的 [document_query.py](../validation/pi-2026-09-17/document_query.py) 只依赖 Python 标准库、直接调用 31100；它不是 Pi 插件，也不在本地提取 PDF 文本：
 
 ```text
 !python3 /绝对路径/document_query.py /绝对路径/invoice.pdf "读取发票编号和金额并计算总额"
@@ -76,10 +76,10 @@ PDF 的可行路径是在 Pi 中显式执行普通脚本，再提问。归档的
 
 ## 可复查材料
 
-- [全部 11 个场景的结果](validation/pi-2026-09-17/results.json)：包括失败和补充对照，不只保存成功结果。
-- [请求字段记录](validation/pi-2026-09-17/requests.jsonl)：记录路径、模型、思考、搜索、工具及附件类型；不含认证头或 base64。
-- [服务日志摘要](validation/pi-2026-09-17/service-observations.log)：图片/文档上传、功能开关、搜索来源和超时。
-- [图片样本](validation/pi-2026-09-17/inspection.png)、[PDF 样本](validation/pi-2026-09-17/invoice.pdf)、[文本样本](validation/pi-2026-09-17/handover.txt)、[预期内容](validation/pi-2026-09-17/expected.json)。
+- [全部 11 个场景的结果](../validation/pi-2026-09-17/results.json)：包括失败和补充对照，不只保存成功结果。
+- [请求字段记录](../validation/pi-2026-09-17/requests.jsonl)：记录路径、模型、思考、搜索、工具及附件类型；不含认证头或 base64。
+- 原服务日志摘要 `validation/pi-2026-09-17/service-observations.log` 记录图片/文档上传、功能开关、搜索来源和超时；该日志未包含在当前仓库中，此处仅保留历史文件名，不提供失效下载链接。
+- [图片样本](../validation/pi-2026-09-17/inspection.png)、[PDF 样本](../validation/pi-2026-09-17/invoice.pdf)、[文本样本](../validation/pi-2026-09-17/handover.txt)、[预期内容](../validation/pi-2026-09-17/expected.json)。
 - 原始 Pi 事件及临时执行脚本保留在 `/tmp/pi-genai-validation/`，未复制用户凭据文件。
 
 本轮没有改动代理业务代码，没有安装或启用插件，也没有新增自动化测试。临时 Pi 进程和观察器在收尾时停止，用户原有插件配置保持原样。

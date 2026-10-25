@@ -1,6 +1,6 @@
 # 网页功能接入验证记录
 
-日期：2026-09-17。实现入口见 `provider/features.py`，客户端用法见 README。
+日期：2026-09-17。实现入口见 [`provider/features.py`](../provider/features.py)，客户端当前用法见 [README](../README.md)。
 
 ## 已完成的实现
 

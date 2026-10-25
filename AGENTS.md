@@ -12,7 +12,7 @@
 
 ## 验证与文档
 
-平台协议证据见 `GENAI_WEB_CAPABILITIES.md`；当前使用方法和支持边界以 README 为准。Pi 客户端实际验证见 `PI_REAL_WORLD_VALIDATION.md`：无用户插件时思考和搜索通过，图片仍有长延迟/超时；`@PDF` 不等于文档上传，显式原生 shell 上传成功不代表模型会自动执行工具。改动后同步 README 和 CHANGELOG。附件日志只记录数量、大小、解析长度和耗时，不打印令牌、base64 或完整文档。
+平台协议证据见 `docs/GENAI_WEB_CAPABILITIES.md`；当前使用方法和支持边界以 README 为准。Pi 客户端实际验证见 `docs/PI_REAL_WORLD_VALIDATION.md`：无用户插件时思考和搜索通过，图片仍有长延迟/超时；`@PDF` 不等于文档上传，显式原生 shell 上传成功不代表模型会自动执行工具。改动后同步 README 和 CHANGELOG。附件日志只记录数量、大小、解析长度和耗时，不打印令牌、base64 或完整文档。
 
 代理无服务端会话存储及 Files API。客户端需要发送完整历史。上游图片加载可能超时；单次成功不等于平台已稳定支持所有多轮组合，运行结果应分别记录。
 

@@ -18,7 +18,7 @@ flowchart TD
 
 因无法申请独立 API Key，本阶段明确放弃学校独立官方 API（`genaiapi.shanghaitech.edu.cn`）路线，不提供远程 base 示例、申请指南或绕过网页第一跳的直连方案。这一决策不删除本地 `UPSTREAM_BASE_URL`，也不把 `UPSTREAM_TOOL_MODE=native` 改为 `text`。
 
-认证是三个不同边界：学校网页 JWT／账号认证由第一跳的 [`TokenManager`](auth/token_manager.py) 管理；relay 的 `UPSTREAM_API_KEY` 应对应第一跳本地代理 Key；客户端使用 `RELAY_API_KEY` 访问 relay。后两者不是学校独立 API Key。未配置本地 Key 不等于具备安全隔离，服务应限制在受信网络。
+认证是三个不同边界：学校网页 JWT／账号认证由第一跳的 [`TokenManager`](../auth/token_manager.py) 管理；relay 的 `UPSTREAM_API_KEY` 应对应第一跳本地代理 Key；客户端使用 `RELAY_API_KEY` 访问 relay。后两者不是学校独立 API Key。未配置本地 Key 不等于具备安全隔离，服务应限制在受信网络。
 
 ## 2. 每层做什么、不做什么
 
@@ -37,7 +37,7 @@ flowchart TD
 - **搜索**：识别支持的 web_search 声明，转为第一跳搜索选项，而不是交付为客户端本地函数，也不伪造供应商托管搜索生命周期。
 - **输出**：立即消费第一跳 SSE；正文与独立思考增量向下传递，工具参数等待终态后整批校验。适配为客户端要求的协议，不把第一跳已经解析的调用再次退化成文本再猜一次。
 
-关键实现：[`prepare_chat`](genai2agent-relay/relay/normalize.py)、[`prepare_messages`](genai2agent-relay/relay/messages.py)、[`prepare_responses`](genai2agent-relay/relay/responses.py)、[`request_options`](genai2agent-relay/relay/features.py)、[`ActionRelay.stream` / `_prepare_messages`](genai2agent-relay/relay/engine.py)、[`UpstreamClient._payload` / `stream`](genai2agent-relay/relay/upstream.py)。
+关键实现：[`prepare_chat`](https://github.com/FrozenYears/genai2agent-relay/blob/feat/native-first-streaming/relay/normalize.py)、[`prepare_messages`](https://github.com/FrozenYears/genai2agent-relay/blob/feat/native-first-streaming/relay/messages.py)、[`prepare_responses`](https://github.com/FrozenYears/genai2agent-relay/blob/feat/native-first-streaming/relay/responses.py)、[`request_options`](https://github.com/FrozenYears/genai2agent-relay/blob/feat/native-first-streaming/relay/features.py)、[`ActionRelay.stream` / `_prepare_messages`](https://github.com/FrozenYears/genai2agent-relay/blob/feat/native-first-streaming/relay/engine.py)、[`UpstreamClient._payload` / `stream`](https://github.com/FrozenYears/genai2agent-relay/blob/feat/native-first-streaming/relay/upstream.py)。
 
 ### 第一跳：适配网页协议，而不是冒充学校原生函数 API
 
@@ -47,7 +47,7 @@ flowchart TD
 4. 思考参数只控制布尔 `thinking`，不能实现不同 effort 档位或精确推理预算；独立 `reasoning`/`reasoning_content` 才映射为客户端思考字段，不凭正文语义猜测。搜索映射为 `netGo`，正文引用保留，额外查询的链接单独标为“补充检索结果（独立于正文引用编号）”；补充查询失败保留已有正文，不编造引用对应关系。
 5. 网页返回结构化 `tool_calls` 时优先保留；否则从明确闭合的 Kimi XTML、DeepSeek DSML、XML 或 action 封套中严格提取。代码引用和 `<think>` 中的示例不是执行通道；不从裸 JSON 或函数样式文本猜调用，不修补引号、标签、参数名或类型。
 
-关键实现：[`chat_completions`](api/chat.py)、[`inject_tool_prompt` / `normalize_tool_history`](tools/prompts.py)、[`prepare_request` / `search_sources`](provider/features.py)、[`split_history_messages` / `_iter_genai_stream`](provider/genai.py)、[`extract_tool_calls`](tools/parsing.py)、[`parse_kimi_output`](tools/kimi.py)。
+关键实现：[`chat_completions`](../api/chat.py)、[`inject_tool_prompt` / `normalize_tool_history`](../tools/prompts.py)、[`prepare_request` / `search_sources`](../provider/features.py)、[`split_history_messages` / `_iter_genai_stream`](../provider/genai.py)、[`extract_tool_calls`](../tools/parsing.py)、[`parse_kimi_output`](../tools/kimi.py)。
 
 ## 3. native 与 text 的准确含义
 
@@ -137,7 +137,7 @@ pixi run serve --empty-continuations 8 --tool-repair-attempts 3 --tool-request-t
 
 ### Agent 自动验收与停滞恢复
 
-[`supervisor.py`](validation/native-first-endurance/supervisor.py) 接收真实 agent 客户端、任务和独立验收回调；[`supervise.py`](validation/native-first-endurance/supervise.py) 提供通用 CLI，原 20 阶段 runner 也使用相同监督循环。默认额外 8 次自动反馈、整场 45 分钟、单轮 1200 秒；工具请求 900 秒窗口只约束其中某次 HTTP。
+[`supervisor.py`](../validation/native-first-endurance/supervisor.py) 接收真实 agent 客户端、任务和独立验收回调；[`supervise.py`](../validation/native-first-endurance/supervise.py) 提供通用 CLI，原 20 阶段 runner 也使用相同监督循环。默认额外 8 次自动反馈、整场 45 分钟、单轮 1200 秒；工具请求 900 秒窗口只约束其中某次 HTTP。
 
 模型正常 stop 不等于任务通过。监督器运行真实验收，把失败、工具/协议错误和未完成状态作为新反馈提交给同一会话。连续无工具或相同验收差异触发明确停滞反馈；预算尚余时不因为重复失败就等待人工。反馈要求先核对磁盘和已执行状态再增量修复，不直接重放调用；之前报告的“显式反馈”也本来由测试脚本自动提交，不是人逐轮输入。
 
@@ -145,7 +145,7 @@ pixi run serve --empty-continuations 8 --tool-repair-attempts 3 --tool-request-t
 
 通用 CLI 的任务文件与验收 argv 来自操作者。验收本地 `shell=False` 执行，限制时间、输出与环境凭据；默认不给模型 bash，只有显式授权模式才开放。验收和审计文件应在模型工作目录外；这些措施不是 OS 文件沙箱。任意任务没有可靠验收器时，监督器也不能证明业务成功。
 
-关键实现：第一跳 [`heartbeat_events` / `StreamControl` / `validated_events`](provider/streaming.py)、[`validate_tool_request` / `validate_tool_calls`](tools/contracts.py)；relay [`validate_native_calls` / `decode_action` / `validate_choice`](genai2agent-relay/relay/actions.py)、[`UpstreamClient.stream`](genai2agent-relay/relay/upstream.py)、[`chat_events` / `message_events` / `response_events`](genai2agent-relay/relay/streaming.py)。
+关键实现：第一跳 [`heartbeat_events` / `StreamControl` / `validated_events`](../provider/streaming.py)、[`validate_tool_request` / `validate_tool_calls`](../tools/contracts.py)；relay [`validate_native_calls` / `decode_action` / `validate_choice`](https://github.com/FrozenYears/genai2agent-relay/blob/feat/native-first-streaming/relay/actions.py)、[`UpstreamClient.stream`](https://github.com/FrozenYears/genai2agent-relay/blob/feat/native-first-streaming/relay/upstream.py)、[`chat_events` / `message_events` / `response_events`](https://github.com/FrozenYears/genai2agent-relay/blob/feat/native-first-streaming/relay/streaming.py)。
 实现前通过 GitHub 字面源码检索并直接核对 [Pydantic AI 的 SQL 验收示例](https://github.com/pydantic/pydantic-ai/blob/main/examples/pydantic_ai_examples/sql_gen.py)：真实 `EXPLAIN` 校验失败后使用 `ModelRetry` 将诊断交回模型，而不是修字符串后直接执行。本项目只借鉴“独立校验→有限反馈→重新生成”，没有引入该依赖或复制其实现；它不证明学校网页具备生成端约束，也不保证业务成功。
 
 
@@ -212,7 +212,7 @@ pixi run serve --empty-continuations 8 --tool-repair-attempts 3 --tool-request-t
 - 第二跳个人fork `main@6b02115` 已提高文本重试预算并补充JSON位置/Schema诊断、截断拒绝及空回复继续。本地重构前又包含引用/标记保护和工具结果提示等修复，但核心仍为 `TextActionRelay.run → backend.complete()` 文本路径，不是native-first。
 - 当前分支随后先迁移结构化传输/流式和严格整批交付，再补安全错误传播、累计deadline、空继续/工具纠错，最后提取通用agent监督器。监督器是额外工作流，不是原作者relay内置的任务执行器；旧长期验收脚本也曾自动提交显式反馈，不能说此前全靠人工逐轮诊断。
 
-本地冻结源码可分别查阅第一跳 [`e682010/tools/parsing.py`](https://github.com/FrozenYears/shanghaitech-genai2api/blob/e682010d1acff9e0ee194d2685e73490e2369ecc/tools/parsing.py)、第二跳fork [`6b02115/relay/engine.py`](https://github.com/FrozenYears/genai2agent-relay/blob/6b02115ea3bdaba6e803223fd3e5af46d73104ba/relay/engine.py)与重构前 [`5d3bd12/relay/engine.py`](https://github.com/FrozenYears/genai2agent-relay/blob/5d3bd12855269e9b6e901dc87465f5ca11f96157/relay/engine.py)；当前监督入口为 [`supervise.py`](validation/native-first-endurance/supervise.py)。
+本地冻结源码可分别查阅第一跳 [`e682010/tools/parsing.py`](https://github.com/FrozenYears/shanghaitech-genai2api/blob/e682010d1acff9e0ee194d2685e73490e2369ecc/tools/parsing.py)、第二跳fork [`6b02115/relay/engine.py`](https://github.com/FrozenYears/genai2agent-relay/blob/6b02115ea3bdaba6e803223fd3e5af46d73104ba/relay/engine.py)与重构前 [`5d3bd12/relay/engine.py`](https://github.com/FrozenYears/genai2agent-relay/blob/5d3bd12855269e9b6e901dc87465f5ca11f96157/relay/engine.py)；当前监督入口为 [`supervise.py`](../validation/native-first-endurance/supervise.py)。
 
 ### 5.6 迁移收益、代价与没有改变的边界
 
@@ -246,7 +246,7 @@ pixi run serve --empty-continuations 8 --tool-repair-attempts 3 --tool-request-t
 
 主客户端使用用户已配置的 omp 18.12.6，RPC 状态确认两模型都走 `GenAI` provider 的 `http://127.0.0.1:31110/v1`，不是官方 API。两个模型分别保持连续历史，运行同一套 20 阶段实际财务流水项目，使用真实文件/进程/SQLite 和独立累计验收。
 
-Kimi 在约 31 分 44 秒完成全部阶段，但有两次流错误，需要显式继续；DeepSeek 运行约 8 分钟、完成前 9 阶段后，在第 10 阶段因空回复和流错误未能恢复。当前实现不能概括为“长时无故障”，更不能把端口健康或解析器通过等同于 agent 稳定完成任务。详细指标、失败和复现方法见 [正式 omp 验收报告](TEST_REPORT_deepseek_pro.md#2026-10-25正式双跳重启后的-omp-持续开发验收)，机器可读证据见 [验证摘要](validation/omp-endurance-2026-10-25.json)。
+Kimi 在约 31 分 44 秒完成全部阶段，但有两次流错误，需要显式继续；DeepSeek 运行约 8 分钟、完成前 9 阶段后，在第 10 阶段因空回复和流错误未能恢复。当前实现不能概括为“长时无故障”，更不能把端口健康或解析器通过等同于 agent 稳定完成任务。详细指标、失败和复现方法见 [正式 omp 验收报告](TEST_REPORT_deepseek_pro.md#2026-10-25正式双跳重启后的-omp-持续开发验收)，机器可读证据见 [验证摘要](../validation/omp-endurance-2026-10-25.json)。
 
 
 ## 8. 历史持续工作故障的根因与一次继续修复
@@ -269,10 +269,10 @@ Kimi 在约 31 分 44 秒完成全部阶段，但有两次流错误，需要显�
 
 本节保留首次根因修复时的行为与证据；下述“一次”仅指该历史版本。当前可配置的额外继续次数及共享生成窗口以第四节为准。
 
-1. 当时第一跳 [`iter_genai_stream`](provider/genai.py) 对工具请求只处理**完全空、正常 stop**这一已复现形态：不交付空终态，保留完整历史，追加一次明确继续指令。没有新的客户端调用被交付，所以不会重放已执行工具；该历史版本最多一次，持续为空仍以 `upstream_empty_response` 失败。它是对平台空输出的有界恢复，不是修复了学校推理服务内部故障。
-2. [`validated_events`](provider/streaming.py) 不再把空/仅思考的回答当成功；有思考增量、可见文本、坏参数、网络错误或长度截断时禁止该自动继续。完整批次、Schema 与权限边界不放宽。
-3. [`ToolContractError`](tools/contracts.py) 与三个输出适配器保留明确错误代码。参数错误报告工具、约束、字段及路径，不携带文件正文、命令或其他参数值。
-4. relay 的 [`UpstreamError`](genai2agent-relay/relay/errors.py) 仅透传安全的结构化 `message/type/code`，限长并脱敏；坏 JSON、过大错误体不回显，失败后不发送成功终态。没有新增模型兜底或工具执行重试。
+1. 当时第一跳 [`iter_genai_stream`](../provider/genai.py) 对工具请求只处理**完全空、正常 stop**这一已复现形态：不交付空终态，保留完整历史，追加一次明确继续指令。没有新的客户端调用被交付，所以不会重放已执行工具；该历史版本最多一次，持续为空仍以 `upstream_empty_response` 失败。它是对平台空输出的有界恢复，不是修复了学校推理服务内部故障。
+2. [`validated_events`](../provider/streaming.py) 不再把空/仅思考的回答当成功；有思考增量、可见文本、坏参数、网络错误或长度截断时禁止该自动继续。完整批次、Schema 与权限边界不放宽。
+3. [`ToolContractError`](../tools/contracts.py) 与三个输出适配器保留明确错误代码。参数错误报告工具、约束、字段及路径，不携带文件正文、命令或其他参数值。
+4. relay 的 [`UpstreamError`](https://github.com/FrozenYears/genai2agent-relay/blob/feat/native-first-streaming/relay/errors.py) 仅透传安全的结构化 `message/type/code`，限长并脱敏；坏 JSON、过大错误体不回显，失败后不发送成功终态。没有新增模型兜底或工具执行重试。
 
 该历史版本的回归覆盖零输出后一次恢复、持续为空、思考后禁止重放、Schema/解析/网络错误分类、断流后无成功终态、取消关闭与凭据保护。当时记录第一跳 305 项、relay 89 项及 259 个子测试通过，**不是本次预算升级的测试结果**。实际续作及故障注入的不同证据口径见 [根因修复验收报告](TEST_REPORT_deepseek_pro.md)；不能将故障注入计成自然长测成功。
 
@@ -289,7 +289,7 @@ Kimi 在约 31 分 44 秒完成全部阶段，但有两次流错误，需要显�
 
 Kimi本轮330.282秒后停在第1阶段：初次及两次显式反馈都以正常非空答复结束，但前两轮只给计划，最后虽写代码并运行程序，金额舍入仍有一项独立验收失败。没有空继续、次数耗尽或deadline错误。不能因为代理交付正常stop就把任务算作完成，更不能用加大空预算来重试非空计划或“修正”业务代码。
 
-因此该版预算可以提高连续空完成的恢复机会，但仍不保证整个任务永不中断。该次两轮“显式反馈”由测试脚本自动提交，不是人逐次输入。详细数据及限制见[历史复测报告](TEST_REPORT_deepseek_pro.md#2026-10-25历史多次空继续预算部署与正式双跳复测)和[机器可读摘要](validation/recovery-budget-2026-10-25.json)；不能把不同随机运行当作受控A/B或模型能力排名。
+因此该版预算可以提高连续空完成的恢复机会，但仍不保证整个任务永不中断。该次两轮“显式反馈”由测试脚本自动提交，不是人逐次输入。详细数据及限制见[历史复测报告](TEST_REPORT_deepseek_pro.md#2026-10-25历史多次空继续预算部署与正式双跳复测)和[机器可读摘要](../validation/recovery-budget-2026-10-25.json)；不能把不同随机运行当作受控A/B或模型能力排名。
 
 
 ## 10. 当前双类别恢复与监督器的正式验证
@@ -314,5 +314,5 @@ Kimi本轮1825.531秒完成20/20阶段，110次工具、94次客户端模型响�
 
 本轮自然样本最多用到第1次空继续、第2次工具纠错、单阶段第2次监督反馈，没有自然证明需要用满8次预算。两次运行不是受控旧新A/B，不据此承诺任意任务或所有客户端永不中断。当前“停滞标记”是验收签名/工具数启发式：Kimi记录2个标记，其中第3阶段成功续作因验收结果重复也被标记；实际带停滞指令的反馈只发生在第4阶段，不将两个标记都描述成恢复事故。
 
-详细参数、结果、固定fixture哈希及日志计数见[本轮机器摘要](validation/automatic-recovery-2026-10-25.json)和[正式测试报告](TEST_REPORT_deepseek_pro.md#2026-10-25未交付工具纠错与自动监督正式长测)。两模型原始会话、代码和SQLite及通用CLI证据按用户选择保留；仅删除本轮受控HTTP故障注入临时脚本，旧证据不动。
+详细参数、结果、固定fixture哈希及日志计数见[本轮机器摘要](../validation/automatic-recovery-2026-10-25.json)和[正式测试报告](TEST_REPORT_deepseek_pro.md#2026-10-25未交付工具纠错与自动监督正式长测)。两模型原始会话、代码和SQLite及通用CLI证据按用户选择保留；仅删除本轮受控HTTP故障注入临时脚本，旧证据不动。
 

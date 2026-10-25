@@ -2,7 +2,7 @@
 
 ## 2026-10-25：未交付工具纠错与自动监督正式长测
 
-两跳已重启，真实omp均使用用户现有 `GenAI` provider、`openai-completions`、`http://127.0.0.1:31110/v1`；上游仍为学校网页聊天后端，未使用独立官方API。当前配置、失败边界和部署身份见[架构第四、十节](STAGE_NATIVE_FIRST.md)，完整摘要见[automatic-recovery-2026-10-25.json](validation/automatic-recovery-2026-10-25.json)。
+两跳已重启，真实omp均使用用户现有 `GenAI` provider、`openai-completions`、`http://127.0.0.1:31110/v1`；上游仍为学校网页聊天后端，未使用独立官方API。当前配置、失败边界和部署身份见[架构第四、十节](STAGE_NATIVE_FIRST.md)，完整摘要见[automatic-recovery-2026-10-25.json](../validation/automatic-recovery-2026-10-25.json)。
 
 ### 本轮方法与结果
 
@@ -45,11 +45,11 @@ Kimi的4次自动反馈发生于3个阶段：
 
 本轮没有自然用到第2次以上空继续、第3次工具纠错或第3次agent反馈，预算上限由确定性回归验证。旧runner也自动发“显式反馈”，本轮不是从人工逐轮输入升级成自动化的受控对照。不能保证其他任务/模型负载均成功；未使用可选监督器的普通客户端仍可能在HTTP失败后停下。
 
-复现长期任务：`pixi run python -B validation/native-first-endurance/run.py run --model <deepseek-pro|Kimi-k3> --stages 20 --max-feedback 8 --max-minutes 45 --stage-timeout 1200`。通用任务入口见[README](README.md#无需逐次人工输入的-omp-任务监督)。任务总预算耗尽保存检查点并失败退出，不无限循环；不支持跨进程自动恢复。
+复现长期任务：`pixi run python -B validation/native-first-endurance/run.py run --model <deepseek-pro|Kimi-k3> --stages 20 --max-feedback 8 --max-minutes 45 --stage-timeout 1200`。通用任务入口见[README](../README.md)。任务总预算耗尽保存检查点并失败退出，不无限循环；不支持跨进程自动恢复。
 
 ## 2026-10-25：历史多次空继续预算部署与正式双跳复测
 
-本节记录双类别恢复与通用监督器实现前的3次/600秒版本，不代表当前配置或进程。当前契约见 [STAGE_NATIVE_FIRST.md](STAGE_NATIVE_FIRST.md)，该次原始指标见 [recovery-budget-2026-10-25.json](validation/recovery-budget-2026-10-25.json)。下方一次继续与旧长测也保留为历史，不改写其结果。
+本节记录双类别恢复与通用监督器实现前的3次/600秒版本，不代表当前配置或进程。当前契约见 [STAGE_NATIVE_FIRST.md](STAGE_NATIVE_FIRST.md)，该次原始指标见 [recovery-budget-2026-10-25.json](../validation/recovery-budget-2026-10-25.json)。下方一次继续与旧长测也保留为历史，不改写其结果。
 
 ### 当前策略与部署
 
@@ -95,7 +95,7 @@ Kimi的三个用户轮次都正常end-turn，没有源空继续、预算耗尽�
 
 ## 2026-10-25：持续工作故障根因修复与复验
 
-证据摘要：[relay-rootcause-2026-10-25.json](validation/relay-rootcause-2026-10-25.json)；架构与边界见 [阶段说明第八节](STAGE_NATIVE_FIRST.md#8-历史持续工作故障的根因与一次继续修复)。本节不覆盖或改写下方此前长时验收结果。
+证据摘要：[relay-rootcause-2026-10-25.json](../validation/relay-rootcause-2026-10-25.json)；架构与边界见 [阶段说明第八节](STAGE_NATIVE_FIRST.md#8-历史持续工作故障的根因与一次继续修复)。本节不覆盖或改写下方此前长时验收结果。
 
 ### 定位结论
 
@@ -136,7 +136,7 @@ Kimi的三个用户轮次都正常end-turn，没有源空继续、预算耗尽�
 
 ## 2026-10-25：正式双跳重启后的 omp 持续开发验收
 
-**结论：Kimi 在两次显式恢复后完成约半小时的累计开发；DeepSeek 在第 10 阶段停止，不能认定长时稳定。** 原始事件、实际文件和独立验收结果与短样本分开保存，精简证据为 [omp-endurance-2026-10-25.json](validation/omp-endurance-2026-10-25.json)。
+**结论：Kimi 在两次显式恢复后完成约半小时的累计开发；DeepSeek 在第 10 阶段停止，不能认定长时稳定。** 原始事件、实际文件和独立验收结果与短样本分开保存，精简证据为 [omp-endurance-2026-10-25.json](../validation/omp-endurance-2026-10-25.json)。
 
 ### 服务与客户端身份
 
@@ -179,7 +179,7 @@ Kimi的三个用户轮次都正常end-turn，没有源空继续、预算耗尽�
 
 ### 复现、材料与限制
 
-运行器与阶段契约位于 [validation/native-first-endurance](validation/native-first-endurance/)。正式服务及用户现有 `GenAI` 模型配置就绪后，可运行：
+运行器与阶段契约位于 [validation/native-first-endurance](../validation/native-first-endurance/)。正式服务及用户现有 `GenAI` 模型配置就绪后，可运行：
 
 ```bash
 pixi run python -B -u validation/native-first-endurance/run.py run --model deepseek-pro
@@ -233,7 +233,7 @@ Claude Code 初始试点被 Windows 8.3 短路径权限检查拦截；后续 Cla
 
 ## 长文件、持续开发与多类型工具补充验证
 
-证据摘要：[validation/kimi-endurance-2026-10-24.json](validation/kimi-endurance-2026-10-24.json)。全部使用真实模型和本地实际执行器；不将 HTTP 200、模型声称完成或部分文件正确作为通过标准。
+证据摘要：[validation/kimi-endurance-2026-10-24.json](../validation/kimi-endurance-2026-10-24.json)。全部使用真实模型和本地实际执行器；不将 HTTP 200、模型声称完成或部分文件正确作为通过标准。
 
 ### 首次复制错误与原生工具遗漏是不同问题
 
@@ -288,7 +288,7 @@ Kimi 的首份文件为 8,390 字节，一行数据复制错误；模型经 read
 
 实测修复：先保留原始封套／Markdown 引用边界，再处理 think/DSML；流式检测保留未闭合引用，引用中的标记不触发调用；Anthropic 不删除代码引用中的 think 字面数据；relay 原生语法检查排除引用和合法 JSON 参数；明确结果封套是已执行回执及核验后的退出条件。
 
-完整测量摘要与样本 SHA-256：[validation/local-model-tools-2026-10-24.json](validation/local-model-tools-2026-10-24.json)。本轮未重测 512k 上下文、所有工具／协议组合，不据此声称模型不会再出现内容复制错误。
+完整测量摘要与样本 SHA-256：[validation/local-model-tools-2026-10-24.json](../validation/local-model-tools-2026-10-24.json)。本轮未重测 512k 上下文、所有工具／协议组合，不据此声称模型不会再出现内容复制错误。
 
 ## 历史报告
 

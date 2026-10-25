@@ -1,248 +1,189 @@
 # GenAI2OpenAI
 
-将上海科技大学 GenAI 平台接入 Claude Code、Codex CLI 等客户端的代理服务，同时提供 Anthropic Messages、OpenAI Chat Completions 与 OpenAI Responses 三种接口。
+将上海科技大学 GenAI 网页端模型接入本地 agent，提供 OpenAI Chat Completions、Anthropic Messages 和 OpenAI Responses 兼容接口。本仓库为第一跳，负责网页登录、附件处理与工具协议适配；[genai2agent-relay](https://github.com/FrozenYears/genai2agent-relay/tree/feat/native-first-streaming) 为独立的第二跳，负责面向客户端的协议转换。
 
-A proxy that connects ShanghaiTech's GenAI platform to Claude Code, Codex CLI and other clients, exposing the Anthropic Messages, OpenAI Chat Completions and OpenAI Responses APIs.
+A two-hop proxy for ShanghaiTech GenAI web-chat models, exposing OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses interfaces for local agents.
 
-若另行使用 `genai2agent-relay` 文本工具中继：已闭合的单行反引号引用及配对代码围栏中的 action 示例作为正文返回，不执行工具；真实调用必须在引用之外，且仍须通过 JSON 和参数校验。不要用 Markdown 包裹实际调用；未闭合或不支持的引用形式仍按严格规则处理。此规则属于中继，不改变本代理的原生协议适配。
+当前实现位于两仓库的 `feat/native-first-streaming` 分支，尚未合并至 `main`。用户需具备学校 GenAI 网页访问权限，无需申请模型厂商或学校独立 API Key。服务直接对接学校网页聊天后端，不提供绕过该后端的官方 API 链路。
 
-## 快速开始
-
-### 1. 安装
-
-```bash
-pixi install
+```mermaid
+flowchart LR
+    A[本地 agent] -->|三种兼容协议| R[第二跳 relay · 31110]
+    R -->|结构化 Chat tools / 历史 / SSE| F[第一跳 · 31100]
+    F -->|网页登录与网页请求| W[学校 GenAI 网页后端]
+    W -->|正文 / 思考 / 工具表示| F
+    F -->|校验后的结构化输出| R
+    R -->|正文增量与完整工具调用| A
 ```
 
-### 2. 配置环境变量
+模型生成工具调用后，由本地 agent 在自身运行权限内执行文件读写、命令执行等操作并回传结果。两跳代理均不代行任何本地工具。两跳间的 `native` 仅指代双跳间采用结构化传输；面向学校网页端时仍需通过文本提示和协议解析进行交互，网页端本身并不等于开放了原生函数调用接口。
 
-在项目根目录创建 `.env`（可复制 `.env.example`），例如：
+## 双跳快速开始
+
+### 获取分支代码
+
+将两仓库克隆至同一父目录下，分别维护各自的依赖环境与 Git 历史。以下命令基于 Bash，适用于 Linux 或 WSL：
+
+```bash
+git clone --branch feat/native-first-streaming https://github.com/FrozenYears/shanghaitech-genai2api.git
+git clone --branch feat/native-first-streaming https://github.com/FrozenYears/genai2agent-relay.git
+```
+
+### 启动第一跳
+
+安装 Pixi 后，在第一跳根目录下执行：
+
+```bash
+cd shanghaitech-genai2api
+pixi install
+cp .env.example .env
+```
+
+配置 `.env` 文件，填入网页登录凭据与本地访问密钥：
 
 ```dotenv
-GENAI_TOKEN=学号@密码
+GENAI_TOKEN=student_id@password
 PORT=31100
 API_FORMAT=both
+API_KEY=replace-with-first-hop-key
 GENAI_EMPTY_CONTINUATIONS=8
 GENAI_TOOL_REPAIR_ATTEMPTS=3
 GENAI_TOOL_REQUEST_TIMEOUT_SECONDS=900
 ```
 
-`GENAI_TOKEN` 也可以填写 JWT。`.env` 已被 Git 忽略，不会提交凭据；图片上传所需的令牌由代理从前端脚本自动获取，无需手工配置。
-
-### 3. 启动代理
-
-配置 `.env` 后可直接启动：
+`GENAI_TOKEN` 支持配置网页 JWT 或账号密码。学号密码方式通过统一身份认证（CAS）登录，Token 过期后自动尝试刷新。若采用 JWT，需在[学校 GenAI 网页](https://genai.shanghaitech.edu.cn/)的网络请求头中提取 `x-access-token`；切勿提交 `.env` 文件或泄露登录凭据。
 
 ```bash
 pixi run serve
 ```
 
-命令行参数可以覆盖 `.env` 中的设置：
+Windows 环境支持通过 `pwsh -File run-windows.ps1` 启动；脚本会自动利用本地缓存完成 Pixi 安装与服务拉起。命令行参数优先级高于 `.env`，例如：
 
 ```bash
-pixi run serve --port 31200 --api-format anthropic --empty-continuations 8 --tool-repair-attempts 3 --tool-request-timeout 900
+pixi run serve --port 31100 --api-format both --empty-continuations 8 --tool-repair-attempts 3 --tool-request-timeout 900
 ```
 
-也可以直接运行任意 `pixi run python main.py ...` 命令。
+第一跳当前默认绑定 `0.0.0.0`，而非仅监听回环地址。务必配置 `API_KEY`，并通过防火墙或受信局域网限制访问来源，严禁直接暴露于公网。第一跳不支持通过 `HOST` 配置监听地址。
 
-手动获取 JWT：前往 [GenAI 对话平台](https://genai.shanghaitech.edu.cn/)，F12 打开 Network，发送消息后从 `chat` 请求头中复制 `x-access-token`。
+### 启动第二跳
 
-### 4. 配置 Claude Code
-
-设置环境变量（写入 `~/.bashrc` 或 `~/.zshrc`）：
+在另一终端窗口进入第二跳目录。使用 uv 构建独立虚拟环境以避免全局污染：
 
 ```bash
-export ANTHROPIC_BASE_URL="http://127.0.0.1:31100"
-export ANTHROPIC_AUTH_TOKEN="local-proxy"   # 如果设了 --api-key，改成同一个值
-export ANTHROPIC_MODEL="chatglm"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="MiniMax-M1"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="deepseek-pro"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="chatglm"
-export ANTHROPIC_REASONING_MODEL="MiniMax-M1"
+cd genai2agent-relay
+uv venv .venv
+uv pip install --python .venv/bin/python -e .
+cp .env.example .env
 ```
 
-### 5. 配置项目设置（减少权限弹窗）
+Windows 环境对应的 Python 解释器路径为 `.venv/Scripts/python.exe`。编辑第二跳 `.env`：
 
-在项目根目录创建 `.claude/settings.json`：
-
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(pixi run *)",
-      "Bash(python *)",
-      "Bash(curl *localhost*)"
-    ]
-  }
-}
+```dotenv
+UPSTREAM_BASE_URL=http://127.0.0.1:31100
+UPSTREAM_TOOL_MODE=native
+UPSTREAM_API_KEY=replace-with-first-hop-key
+RELAY_API_KEY=replace-with-relay-key
+HOST=127.0.0.1
+PORT=31110
 ```
-
-### 6. 启动
 
 ```bash
+.venv/bin/python main.py
+```
+
+认证配置隔离要求如下：
+
+| 配置项 | 职能范围 |
+| --- | --- |
+| 第一跳 `GENAI_TOKEN` | 用于登录学校网页端，仅第一跳持有 |
+| 第一跳 `API_KEY` 与第二跳 `UPSTREAM_API_KEY` | 两处取值必须一致，用于第二跳访问第一跳服务 |
+| 第二跳 `RELAY_API_KEY` | 用于客户端访问第二跳代理，独立于网页登录凭据 |
+
+第二跳默认监听 `127.0.0.1`。双跳服务均需保持常驻运行。第一跳支持客户端直连（监听端口 `31100`），下文接入示例统一基于双跳架构展示。
+
+### 连通性测试
+
+```bash
+curl -fsS http://127.0.0.1:31100/health
+curl -fsS http://127.0.0.1:31110/health
+curl -fsS http://127.0.0.1:31110/v1/models \
+  -H 'Authorization: Bearer replace-with-relay-key'
+```
+
+健康检查接口无需鉴权，仅表明网络端口可达。请求中的模型参数必须匹配模型列表返回的 `id`，如当前平台的 `deepseek-pro`、`Kimi-k3`；代理服务不会将通用别名自动映射为平台 ID。模型列表展示的能力标识源于平台静态元数据，不代表所有组合均通过全功能实测。
+
+## 客户端接入
+
+| 客户端协议 | 服务地址 | 路由端点 |
+| --- | --- | --- |
+| OpenAI Chat Completions | `http://127.0.0.1:31110/v1` | `/chat/completions` |
+| Anthropic Messages | `http://127.0.0.1:31110` | `/v1/messages` |
+| OpenAI Responses | `http://127.0.0.1:31110/v1` | `/responses` |
+
+客户端需携带 `RELAY_API_KEY`，支持置于 `Authorization: Bearer ...` 或 `x-api-key` 请求头。流式请求验证示例：
+
+```bash
+curl -N http://127.0.0.1:31110/v1/chat/completions \
+  -H 'Authorization: Bearer replace-with-relay-key' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"deepseek-pro","messages":[{"role":"user","content":"回答 READY"}],"stream":true}'
+```
+
+### Claude Code
+
+在当前终端中导出对应环境变量后启动：
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:31110
+export ANTHROPIC_AUTH_TOKEN=replace-with-relay-key
+export ANTHROPIC_MODEL=deepseek-pro
 claude
 ```
 
-### 7. 配置 Codex CLI
+若客户端默认配置了其他辅助模型，须同步修正为当前平台存在的模型 ID，避免内部子任务调用失效。网络连接参考 [Claude Code 网关配置文档](https://code.claude.com/docs/en/llm-gateway-connect)；对学校模型的接入适配由本项目实现，不代表 Anthropic 官方支持。切勿为了跳过权限提示而全局授予高危本地执行权限。
 
-Codex CLI 默认走 OpenAI Responses API（`wire_api = "responses"`），编辑 `~/.codex/config.toml`：
+### Codex CLI 及其他 Responses 客户端
+
+在 `~/.codex/config.toml` 中配置自定义 provider：
 
 ```toml
-model = "chatglm"                 # 必须填 GenAI 平台真实的模型 id（aiType），代理不做映射
+model = "deepseek-pro"
 model_provider = "genai"
-disable_response_storage = true   # 代理不提供服务端会话存储
 
 [model_providers.genai]
-name = "ShanghaiTech GenAI"
-base_url = "http://127.0.0.1:31100/v1"   # 注意要带 /v1，Codex 会请求 {base_url}/responses
+name = "ShanghaiTech GenAI relay"
+base_url = "http://127.0.0.1:31110/v1"
 wire_api = "responses"
+env_key = "GENAI_RELAY_API_KEY"
 ```
 
-可选：`model_reasoning_effort` 会映射成 GenAI 的思考开关（`none` 关闭，其余受支持值开启），不代表平台支持不同推理档位。上游返回的思考内容会以 `response.reasoning_summary_text.delta` 事件透传；`model_reasoning_summary` 不改变上游输出。
+启动前设置 `GENAI_RELAY_API_KEY` 环境变量为第二跳的 `RELAY_API_KEY`。规范参见 [Codex 自定义 provider 文档](https://developers.openai.com/codex/config-advanced/)。当前仅支持 Responses 协议核心子集：客户端必须全量提交上下文历史，不支持 `previous_response_id`、`item_reference` 或 `store=true`。若客户端要求服务端状态管理、custom grammar 或未实现的托管工具，必须调整客户端模式或声明定义；单纯修改 base URL 无法保证协议完整兼容。
 
-如果你想改用 Chat Completions 接口，把 `wire_api` 改成 `"chat"` 即可。
+omp 可通过 OpenAI Chat Completions 协议配置接入，base URL 对应表内 Chat 端点；目前的长期运行验证均基于 `GenAI` provider 下的 `deepseek-pro` 和 `Kimi-k3`。关于 Pi 在附件及工具链路上的具体表现，见[历史 Pi 验证](docs/PI_REAL_WORLD_VALIDATION.md)。
 
-## 参数说明
+## 工具调用与自动恢复
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--token` | JWT 令牌或 `学号@密码`（也可写入 `.env` 的 `GENAI_TOKEN`） | — |
-| `--port` | 服务监听端口（也可写入 `.env` 的 `PORT`） | `31100` |
-| `--api-key` | 客户端认证密钥（也可通过 `API_KEY` 环境变量设置） | 无 |
-| `--api-format` | `openai`、`anthropic` 或 `both`（也可写入 `.env` 的 `API_FORMAT`） | `both` |
-| `--empty-continuations` | 工具请求额外空继续；环境变量 `GENAI_EMPTY_CONTINUATIONS`，整数 `0..30`，0 禁用 | `8` |
-| `--tool-repair-attempts` | 未交付坏调用的额外纠错；环境变量 `GENAI_TOOL_REPAIR_ATTEMPTS`，整数 `0..10`，0 禁用 | `3` |
-| `--tool-request-timeout` | 首次、空继续及工具纠错共享的上游生成窗口（秒）；环境变量 `GENAI_TOOL_REQUEST_TIMEOUT_SECONDS`，有限正数 | `900` |
-| `--debug` | 启用详细日志输出 | 关闭 |
+第二跳默认向第一跳发送结构化工具定义、角色、调用 ID 及执行结果。第一跳将其适配为网页消息；上游返回结构化 `tool_calls` 时保留这些字段，并在交付前校验。没有结构化字段时，严格解析 action、XML、DeepSeek DSML 或 Kimi XTML 等明确表示。
 
-## 特性
+正文内容与独立思考支持增量流式输出，等待模型输出期间维持保活心跳。工具调用参数必须在完整接收并通过 JSON 语法、Schema 模式、工具选取范围及并行度约束检查后，整批交付客户端。普通代码示例不作为工具调用解析；任一成员参数异常即导致整批判定失效，系统不执行局部调用筛选，也不尝试补全括号或猜测缺失参数。
 
-- **Claude Code 兼容** — 提供 Anthropic Messages API，支持 `tool_use/tool_result` 转换与扩展思考（thinking）块，可直接接入 Claude Code
-- **Responses 兼容** — 提供 `function_call`、custom text 工具与 reasoning summary 事件；支持工具 namespace。custom grammar 不支持并明确返回 400，使用该格式的 Codex 配置需要改用兼容工具声明或原生供应商接口。
-- **OpenAI 兼容** — 同时提供 OpenAI Chat Completion API，支持 Cursor、Continue 等客户端
-- **工具调用原生优先** — 保留上游结构化 `tool_calls`；没有结构化调用时，严格解析 Kimi XTML、DeepSeek DSML、完整 XML 或 action 封套。三种 API 共用 JSON Schema、工具选择及并行约束，整批校验通过才交付，工具仍由客户端执行。
-- **思维链透传** — 上游 `reasoning_content` 在三个接口里分别以 `reasoning_content`、thinking 块、reasoning 事件输出
-- **自动登录与刷新** — 学号密码模式通过 CAS 自动登录，JWT 过期静默刷新
-- **动态模型列表** — 自动从 GenAI 平台拉取可用模型，`/v1/models` 额外返回图片、文档、搜索、思考开关的 `capabilities`
-- **图片与文档输入** — 三种 API 都支持 URL/base64 图片、内联或 URL 文档；保留历史图片，解析历史文档以延续上下文
-- **联网搜索** — 映射网页的 `netGo`，保留正文来源链接，并追加独立标注的补充检索结果
-- **思考开关** — 支持 `thinking` 布尔值及各客户端的推理参数映射，按上游实际返回透传思考内容
+错误恢复预算集中在第一跳管理，第二跳 native 模式下不追加重试循环：
 
-## 图片、文档、联网搜索与深度思考
+| 环境变量 | CLI 参数 | 默认值及范围 |
+| --- | --- | --- |
+| `GENAI_EMPTY_CONTINUATIONS` | `--empty-continuations` | 空输出续作追加 `8` 次，取值 `0..30` |
+| `GENAI_TOOL_REPAIR_ATTEMPTS` | `--tool-repair-attempts` | 工具调用纠错追加 `3` 次，取值 `0..10` |
+| `GENAI_TOOL_REQUEST_TIMEOUT_SECONDS` | `--tool-request-timeout` | 单请求共享生成窗口 `900` 秒，有限正数 |
 
-三种 API 共用附件上传及功能参数处理，流式和非流式均可使用。模型是否返回思考、是否能读取图片仍取决于上游；代理不生成或伪造思考内容。
+空输出续作仅在上游正常返回 `stop` 但无任何原始正文、思考或调用时触发。工具纠错仅处理正常结束、调用不合法且尚未交付任何正文、思考或调用批次的生成。两项恢复预算独立累计、互不重置；单次请求默认最多生成 `1 + 8 + 3 = 12` 次，共用一个请求级 deadline。次数设为 `0` 只禁用对应恢复，不关闭总时限；心跳和新一代生成不会续期，附件预处理不计入该窗口。
 
-### 控制参数
+正文或思考一旦交付，代理不会撤回重放。网络错误、断流、截断、取消和到期也不触发上述纠错。空恢复预算耗尽返回 `upstream_empty_response`，工具纠错耗尽保留具体错误码，累计生成窗口到期返回 `upstream_request_timeout`。流式失败不发送成功终态，非流式上游失败返回 HTTP 502。
 
-| 功能 | Chat Completions | Anthropic Messages | OpenAI Responses |
-|---|---|---|---|
-| 开启思考 | `"thinking": true` 或 `"reasoning_effort": "high"` | `"thinking": {"type": "enabled", "budget_tokens": 1024}`，也支持 `adaptive` | `"reasoning": {"effort": "high"}` |
-| 关闭思考 | `"thinking": false` 或 `"reasoning_effort": "none"` | `"thinking": {"type": "disabled"}` | `"reasoning": {"effort": "none"}` |
-| 开启搜索 | `"web_search": true` 或 `"web_search_options": {}` | `"web_search": true` 或声明 `web_search_20250305` 等搜索工具 | `"web_search": true` 或 `"tools": [{"type": "web_search"}]` |
+仅在配置 `UPSTREAM_TOOL_MODE=text` 时，第二跳才会激活基于纯文本提示和序列化重试的兜底逻辑。该模式仅用于纯文本后端，并非 native 模式失败后的运行时降级路径。第二跳参数详见[第二跳文档](https://github.com/FrozenYears/genai2agent-relay/blob/feat/native-first-streaming/README.md)。
 
-三个接口均支持扩展字段 `thinking: true/false` 和 `web_search: true/false`。显式布尔值优先于其他映射；未传思考参数时保留上游默认行为。`minimal/low/medium/high/xhigh` 均只映射为开启，不能控制真实思考档位；`budget_tokens` 也不限制平台思考预算，会记日志说明。
+## 可选的 omp 任务监督
 
-搜索工具声明在这里用于启用平台搜索，**不实现 OpenAI/Anthropic 原生托管搜索工具的事件生命周期、工具结果块、地域筛选或搜索次数预算**。`tool_choice: "none"`（Anthropic 的 `{"type":"none"}` 同理）会关闭由工具声明启用的搜索；显式 `web_search: true` 仍然生效。
-
-例如，通过 Chat 同时开启搜索和思考：
-
-```bash
-curl http://127.0.0.1:31100/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "deepseek-pro",
-    "messages": [{"role": "user", "content": "查找上海科技大学图书馆官网并简要介绍"}],
-    "thinking": true,
-    "web_search": true,
-    "stream": true
-  }'
-```
-
-### 图片与文档格式
-
-| 输入 | Chat Completions 内容块 | Anthropic 内容块 | Responses 内容块 |
-|---|---|---|---|
-| 图片 URL / data URL | `{"type":"image_url","image_url":{"url":"https://… 或 data:image/png;base64,…"}}` | `{"type":"image","source":{"type":"url","url":"https://…"}}`，或 `source.type=base64`、`media_type`、`data` | `{"type":"input_image","image_url":"https://… 或 data:image/png;base64,…"}` |
-| 内联文档 | `{"type":"file","file":{"filename":"note.pdf","file_data":"base64 或 data URL"}}` | `{"type":"document","title":"note.pdf","source":{"type":"base64","media_type":"application/pdf","data":"base64"}}` | `{"type":"input_file","filename":"note.pdf","file_data":"data:application/pdf;base64,…"}` |
-| 文档 URL | `{"type":"file","file":{"file_url":"https://…/note.pdf"}}` | `{"type":"document","source":{"type":"url","url":"https://…/note.pdf"}}` | `{"type":"input_file","file_url":"https://…/note.pdf"}` |
-
-Anthropic 还支持文本型文档 `source: {"type":"text","data":"文档正文"}`。只发送附件、没有文字时，代理会补上“请分析所附内容。”作为当前问题。
-
-下面的 Python 示例通过 Chat 同时发送本地图片和文档；将文件路径换成自己的文件即可：
-
-```python
-import base64
-from pathlib import Path
-import requests
-
-image = base64.b64encode(Path("picture.png").read_bytes()).decode()
-document = base64.b64encode(Path("note.pdf").read_bytes()).decode()
-response = requests.post(
-    "http://127.0.0.1:31100/v1/chat/completions",
-    json={
-        "model": "chatglm",
-        "thinking": True,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "结合图片与文档回答我的问题"},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image}"}},
-                {"type": "file", "file": {"filename": "note.pdf", "file_data": document}},
-            ],
-        }],
-    },
-    timeout=360,
-)
-response.raise_for_status()
-print(response.json()["choices"][0]["message"])
-```
-
-如配置了代理 `--api-key`，请求还需添加 `Authorization: Bearer <你的代理密钥>`。
-
-图片直接交给上游读取：base64 图片以 data URL、网络图片以原始 URL 放入 `imageUrls`，不需要经过图片服务上传，也不需要 `width` / `height`。历史图片按网页协议保留在各自消息的多模态内容块中，合并文本块放在图片块之前；实测多轮图片追问可在 0.3 秒内正确回答。当前轮文档先上传并通过同一会话的 `fileIds` 引用；历史文档使用平台解析结果恢复为该轮的文本内容。客户端应在每次请求中发送完整历史及附件，不依赖平台网页会话自动续接。
-
-单张内联图片须小于 20 MiB（base64 会使请求体约为图片的 4/3）；文档须小于 10 MiB，TXT、文本型 PDF 和 DOCX 已完成实际上传解析验证。扫描 PDF、表格及其他格式由平台解析器决定效果。每次请求会重新处理所带附件，暂不提供附件缓存、`/v1/files` 存储或 `file_id` 引用接口。图片与文档由平台侧解析，个别请求可能较慢（实测图片 0.3–1.8 秒，Anthropic 路径有过一次 27.5 秒），代理不会把慢当成失败，仍按 300 秒上游超时处理。
-
-平台搜索正文与额外来源接口的编号可能不同，因此补充列表会单独标为“补充检索结果（独立于正文引用编号）”，不会伪造 `url_citation` 对应关系。补充检索失败时保留已经返回的正文与链接，并记录 warning。
-
-日志会记录思考开关、搜索开关、附件数量、上传字节数、解析文本长度和准备耗时；不记录附件 base64、文档正文或上传凭据。文本 token 用量仍为估算，不包含准确的视觉计费量。
-
-### Pi Agent 实际使用
-
-Pi 0.85.1 屏蔽用户插件后的真实验证见 [PI_REAL_WORLD_VALIDATION.md](PI_REAL_WORLD_VALIDATION.md)，附有独立模型配置和请求记录。思考开关、联网搜索、原生文本读取已通过；单图一次正确但耗时约 259 秒，另一次 300 秒超时。Pi 的 `@PDF` 会按文本读取，不会自动生成文档上传请求；通过 Pi 原生 `!命令` 显式调用上传脚本后可以完成 PDF 问答。模型自动执行上传命令的尝试未通过，不能把代理支持文档等同于客户端直接支持 PDF 附件。
-
-### 常用本地模型的工具闭环
-
-预算升级前，`deepseek-pro` 与 `Kimi-k3` 的真实 write → edit → read、8,389 字节流式内容、低预算截断和 edit 失败恢复结果见 [历史工具复测报告](TEST_REPORT_deepseek_pro.md#2026-10-24deepseek--kimi-真实工具闭环复测) 及 [测量摘要](validation/local-model-tools-2026-10-24.json)。当时两模型的直连／relay 样本最终文件均逐字节匹配并正常结束；Kimi 有一次首次长内容复制错误，经回读发现并修正，仍须保留写后核验。这些记录不作为本次多次空继续版本的验收结果。
-
-此前的 33 KB 全文复制、约 320 KB 源码局部编辑、12 阶段持续开发及 11 类工具（搜索、命令、SQLite、HTTP、后台任务等）验证见 [历史长时多工具报告](TEST_REPORT_deepseek_pro.md#长文件持续开发与多类型工具补充验证) 和 [证据摘要](validation/kimi-endurance-2026-10-24.json)。Kimi 原生 K3 XTML 调用由第一跳严格解析并转换为三种 API 的工具事件，不再只作为正文结束。现有长文件优先局部 edit，代码需真实运行检查，文件内容需独立回读／哈希核验；代理解析正确不保证模型复制内容正确。
-
-## 原生优先与流式链路
-
-整体端口方向、各层职责和流式生命周期见 [原生优先阶段说明](STAGE_NATIVE_FIRST.md)。其中[第五节](STAGE_NATIVE_FIRST.md#5-与双跳原仓库及本地重构前分支的对照)按冻结提交区分原作者 `main`、个人 fork 的 `main`、本地重构前分支与当前实现，分别说明第一跳和第二跳的功能、设计及迁移差异；[第六节](STAGE_NATIVE_FIRST.md#6-不能承诺的边界与证据口径)限定“接近官方 API 工作体验”的证据范围，不将已有三协议、附件等能力误记为本轮新增，也不将实测成功等同于原生 API 全兼容。
-
-第一跳仍连接学校网页聊天端点：工具定义和历史通过网页可接受的文本表达，历史调用保留 ID，结果按 ID 关联。支持提取原生输出不等于网页已开放原生 function API；将 `tools/tool_choice` 直接添加到网页请求的两次短探针，DeepSeek 和 Kimi 都回答 `NO_TOOL`，未返回结构化工具字段。
-
-第二跳 `genai2agent-relay` 默认 `UPSTREAM_TOOL_MODE=native`：向第一跳发送结构化工具定义、角色与历史，消费第一跳的结构化 SSE。不会再次把已经解析的工具调用降成文本，也不会在失败后自动改用文本重放。只有显式设置 `UPSTREAM_TOOL_MODE=text` 才使用普通文本封套；代码示例不触发执行或纠错执行。两个仓库需要一起升级。
-
-本阶段因无法申请独立 API Key，明确放弃学校独立官方 API 路径，不再提供远程 base 或跳过网页第一跳的配置方案。保留学校网页登录认证与两层本地代理 Key；relay 的 `UPSTREAM_BASE_URL=http://127.0.0.1:31100` 仍是必需的本地链路配置，不得因此删除，也不应把 `native` 改成 `text`。
-
-流式请求先发送协议开始事件，再持续交付安全正文和独立思考增量；第一跳等待上游时每 10 秒发送心跳，relay 转发上游心跳。工具参数在完整响应结束、JSON/Schema/choice 校验后整批交付，不提前执行半截参数。流中错误不再发送成功结束事件，Responses 还发送 `response.failed`。断开或总时限到期会关闭已取得的实际上游响应/socket；尚未取得响应头的阻塞连接不能立即打断，但主响应按总时限失败，worker 返回后清理且不再发新继续，不能承诺立即取消远端推理。
-
-### 工具请求的自动恢复与预算
-
-恢复只由第一跳负责，relay native 不叠加重试。两个预算独立累计，彼此不重置：
-
-- **完全空完成**：零原始正文、零思考、零调用且正常 `stop`，默认额外继续 8 次。
-- **未交付坏调用**：上游正常结束，但显式工具协议/JSON/Schema/选择约束不合法，且没有任何正文、思考或工具批次交付，默认让模型重新生成 3 次。不补参数、不修括号、不挑选坏批次中的合法成员执行。
-
-默认一个请求最多 `1 + 8 + 3 = 12` 次生成，共享 **900 秒**窗口（不含附件预处理）；ping、心跳、新一代及类别切换都不续期。每次使用原问题加真实次数/安全错误反馈，保留完整原历史和工具约束，不积累虚构 assistant/tool 结果，不切模型、不降级 text。
-
-已交付正文/思考、网络错误、提前断流、长度截断、取消和到期均不适用协议纠错。普通非空计划不会被猜成任务未完成而在反代中重试。次数耗尽保留具体错误码并说明恢复耗尽；到期为 `upstream_request_timeout`；都不发送成功终态。普通无工具请求不使用这些恢复预算或工具总时限。完整状态边界见 [架构第四节](STAGE_NATIVE_FIRST.md#4-sse-生命周期终态与取消)。
-
-### 无需逐次人工输入的 omp 任务监督
-
-反代不知道业务验收条件。新增 [`supervise.py`](validation/native-first-endurance/supervise.py) 使用真实 omp、用户现有 GenAI 配置、同一会话与工作目录，在每轮结束后运行操作者指定的独立验收；错误结束、只给计划、验收失败和重复停滞会自动提交真实反馈继续，不需要每次人工输入。默认额外 8 次反馈、整场 45 分钟、单轮 1200 秒。它是**可选的 agent 监督器，不会自动安装到其他客户端或修改全局 omp 配置**。
+单次请求级的重试机制无法判断上层业务目标是否达成。当模型仅输出规划未执行改动、修改导致业务测试失败，或交付数据后发生协议异常时，可采用内置的任务监督器：
 
 ```bash
 pixi run python -B validation/native-first-endurance/supervise.py \
@@ -251,105 +192,97 @@ pixi run python -B validation/native-first-endurance/supervise.py \
   --artifact-dir D:/audit/new-run --max-feedback 8 --max-minutes 45
 ```
 
-`checker-argv.json` 是可信可执行程序的字符串数组，例如 `["D:/shanghaitech-genai2api/.pixi/envs/default/python.exe", "-B", "D:/trusted/check.py"]`。验收以进程退出码为准，`shell=False`，有超时、有界输出及环境凭据过滤；验收器和审计目录应放在模型工作目录外。默认 agent 没有 bash，只有显式 `--allow-bash-pattern` 才开放对应模式；这不是 OS 沙箱，文件工具权限仍取决于客户端。
+参数路径需替换为真实本地路径。`workspace` 目录必须预先存在，`artifact-dir` 须指定工作目录之外的新路径。`task.txt` 存放任务需求，`checker-argv.json` 为可信的自动化验收命令列表，例如：
 
-单请求恢复耗尽不等于立即等人：监督器会根据真实状态自动发新回合，先回读磁盘再增量修复，不重放旧操作。任务反馈或总时间预算耗尽后，保存 `result.json`、`checkpoint.json`、会话和逐轮验收并非零退出；不无限循环、不伪报成功。当前没有跨进程自动恢复；权限/身份故障或超时 abort 后无法确认会话停稳，也会明确停止，避免并发操作。
+```json
+["D:/shanghaitech-genai2api/.pixi/envs/default/python.exe", "-B", "D:/trusted/check.py"]
+```
 
-同一套 20 阶段长期验收可用 `validation/native-first-endurance/run.py run --model deepseek-pro --stages 20 --max-feedback 8 --max-minutes 45 --stage-timeout 1200`。旧 `--repairs` 已移除；旧报告的两次“显式反馈”本来就是脚本自动发消息，不代表逐轮人工纠错。
+监督器调用已安装、已配置相应 GenAI 模型的真实 omp，在同一会话中工作。每轮结束后，它在本地运行验收命令，以进程退出码判断结果；未通过时把真实验收差异交回模型，要求先读取当前文件和执行状态，再增量修复。默认每任务额外反馈 8 次、整场 45 分钟、单轮 1200 秒。该入口使用当前 Windows omp 安装路径，并非通用跨平台启动器。
 
-本轮正式双跳长测中，两模型均完成20阶段且最终71项累计验收通过；Kimi的两次协议错误和SQLite计划停滞由监督器自动反馈恢复，无人工逐次输入。完整成功/失败过程及未用满预算等限制见[最新测试报告](TEST_REPORT_deepseek_pro.md#2026-10-25未交付工具纠错与自动监督正式长测)和[架构第十节](STAGE_NATIVE_FIRST.md#10-当前双类别恢复与监督器的正式验证)。这不保证未使用监督器的其他客户端也会自动接续。
+验收命令使用 `shell=False`，限制运行时间和输出，并过滤环境中的凭据。agent 默认没有 bash，只有显式传入 `--allow-bash-pattern` 才开放相应模式。验收脚本应放在工作目录外；这些措施不是 OS 沙箱，文件和命令权限仍需由客户端限制。
 
-两跳保留结构化错误的安全 `message/type/code`，区分 `upstream_request_timeout`、`upstream_empty_response`、`upstream_stream_incomplete`、`upstream_stream_error`、`tool_call_parse_error` 和 `tool_arguments_invalid`。Schema 错误只说明约束、字段和位置，不回显参数值；relay 限长并遮蔽凭据，不转发整个错误体。历史一次继续修复及取证边界见 [阶段说明的根因分析](STAGE_NATIVE_FIRST.md#8-历史持续工作故障的根因与一次继续修复)，不将其旧测试数或服务 PID 当成本轮部署证据。
+单请求恢复耗尽后，监督器可在剩余任务预算内自动开启下一回合。任务总时间或反馈预算耗尽时，保存 `result.json`、`checkpoint.json`、会话与验收记录，并非零退出。身份/权限故障，或超时 abort 后无法确认会话停稳，也会停止，避免并发提交。当前不支持跨进程自动恢复；它是可选入口，不会自动接管 Claude Code、Codex 或普通 omp 会话。
+
+## 图片、文档、搜索与思考
+
+| 功能特性 | 规范说明与支持边界 |
+| --- | --- |
+| 思考机制 | 三种协议均支持 `thinking: true/false`；客户端 reasoning effort 等枚举统一映射为布尔状态，不支持细粒度档位与明确的 token budget 约束 |
+| 联网检索 | `web_search: true`、受支持的搜索参数或工具定义统一转换为网页端联网搜索；输出中包含检索来源标注，但不维护模型供应商托管搜索工具的状态机 |
+| 图像输入 | 接收 URL、data URL 以及对应协议的图像块；当前轮图片直接提交网页后端渲染，历史上下文图像保留轮次标记，不复用旧上传 ID |
+| 文档解析 | 支持内联 base64、data URL 及 HTTP(S) URL；当前轮文档在同一会话内上传，历史轮次文档通过学校端提取的纯文本注入上下文恢复 |
+
+思考配置项包括 Chat 的 `reasoning_effort: "none"`、Messages 的 `thinking: {"type":"disabled"}`、Responses 的 `reasoning: {"effort":"none"}`；启用思考需指定对应的支持值或开启标识。上述参数仅映射为网页端布尔开关；若模型未拆分输出或直接在正文中输出推导步骤，代理不对正文实施拆分过滤。
+
+Chat 协议多模态消息体结构：
+
+```json
+[
+  {"type":"text","text":"分析所附图片和文档"},
+  {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}},
+  {"type":"file","file":{"filename":"note.pdf","file_data":"data:application/pdf;base64,..."}}
+]
+```
+
+将上述数组作为 `messages[].content` 提交，其中 `...` 需替换为 base64 数据。内联单张图片大小限制为 20 MiB，文档限制为 10 MiB；扫描文档的提取效果由学校平台处理服务决定。服务端无持久化 Files API、`file_id` 状态或跨请求缓存，每轮请求所附文件均会重新解析。客户端必须全量提交带有附件声明的历史记录。历史上下文的格式转换及异常边界参考[网页能力取证](docs/GENAI_WEB_CAPABILITIES.md)与[功能验证记录](docs/FEATURE_VALIDATION.md)，早期基于外部文件上传的探索不作为当前设计依据。
+
+## 与重构前版本的区别
+
+对比基线为上游作者第一跳 `main@7e95aab`、第二跳 `main@dbb8f65`；本地 native 重构前冻结版本为 `e682010` 与 `5d3bd12`。上游版本已支持三类客户端协议、网页登录、附件挂载、联网检索及思考字段解析；早期第二跳实现中已包含白名单和 Schema 校验。
+
+| 模块 | 重构前版本 | 当前版本 |
+| --- | --- | --- |
+| 双跳交互 | 第二跳将工具定义、调用状态与上下文历史压平成字符串传递给 `backend.complete()`；第二跳主动阻断结构化调用透传 | 默认采用 native 模式传递结构化工具定义及上下文，第二跳直接消费第一跳 SSE 结构，网页端的文本化交互集中由第一跳完成 |
+| 流式交付 | 第一跳已有正文和思考流式输出；第二跳等待整份文本并校验后才发 SSE | 开始事件先发，正文和思考随上游增量返回；工具调用收全并校验后整批交付 |
+| 数据校验 | 第一跳包含宽松 JSON 解析、字面量提取及参数局部修补；在特定路径下丢弃校验失败的调用 | 统一协议规范；严格实施 JSON 语法校验、Schema 约束、ID 校验及并发约束，整批拒绝非法工具调用，禁止参数推断补全 |
+| 异常恢复 | 文本重试集中在第二跳层级，缺乏针对单次请求的累计全局时限约束 | 第一跳对空输出与工具语法错误分别计数并受统筹超时控制；native relay 消除冗余重试层 |
+| 任务续作 | 本地验收脚本已有自动反馈，原 relay 本身没有通用任务监督器 | 提供独立的 omp 监督入口，依靠真实验收处理计划停滞和业务错误 |
+| 边界定义 | 未支持的字段被静默忽略，端点存在易产生完整原生能力的误解 | 对未实现的状态机制、语法约束等显式拦截并返回标准化错误终态 |
+
+过去能被猜测修好的输入，现在可能报错或要求模型重新生成。工具参数仍需收全，恢复也会增加请求数和耗时。自定义 relay backend 需将旧 `complete()` 接口迁移为 `stream()`。完整源码对照与迁移说明见[架构文档第五节](docs/STAGE_NATIVE_FIRST.md#5-与双跳原仓库及本地重构前分支的对照)。
+
+## 验证记录
+
+2026-10-25 验证记录基于真实 omp 环境，经双跳完整架构连接学校网页端模型，分别在独立路径和连续会话下执行覆盖 20 个阶段的 Python/CSV/SQLite 项目：
+
+| 测试项 | deepseek-pro | Kimi-k3 |
+| --- | ---: | ---: |
+| 执行总耗时 | 595.000 秒 | 1825.531 秒 |
+| 阶段完成率 | 20/20 | 20/20 |
+| 工具调用总数 | 150 | 110 |
+| 第一跳空输出续作 / 工具纠错次数 | 8 / 4 | 0 / 0 |
+| 监督器介入反馈轮次 | 0 | 4 |
+| 人工交互调整次数 | 0 | 0 |
+| 独立自动化验收项通过数 | 71 项通过 | 71 项通过 |
+
+DeepSeek 本轮无需额外监督反馈，第一跳在原请求内恢复了空输出与坏调用。Kimi 的坏 JSON、未知工具和两轮只给计划的停滞由监督器自动反馈恢复；两模型都不是无错误运行。该实现另有第一跳 562 项回归、relay 89 项测试和 259 个子测试通过。以上是已有验收记录，本次文档整理没有重新运行长期测试。
+
+这些记录说明，在已测编码场景中配合监督器，可以连续工作并自动恢复。它们不是官方 API 对照或跨模型性能排名，也不保证任意任务成功；自然样本没有用满配置的恢复预算。详见[实际报告](docs/TEST_REPORT_deepseek_pro.md)与[机器摘要](validation/automatic-recovery-2026-10-25.json)。
 
 ## 已知限制
 
-- **令牌过期的恢复仍有缺口**：模型元数据与文档上传阶段遇到失效令牌时，实际观察到 HTTP 500 或流中断，尚未统一恢复与正确传播错误。历史 Pi 验证曾通过重启恢复登录，不能据此认定该缺口已修复。各阶段部署与实际复测见 [架构说明](STAGE_NATIVE_FIRST.md)，历史 PID 和测试数不代表当前进程。
-- **模型名完全透传**：请求里的 `model` 会直接作为 GenAI 平台的 `aiType` 发送，不做任何映射。请填写平台真实存在的模型 id。
-- **无服务端会话状态**：Responses 的 `previous_response_id`、`item_reference`、`store=true` 等不能在本代理恢复状态，明确返回 400。客户端必须每轮发送完整历史。
-- **Responses API 是兼容子集**：支持 message、function_call、custom text、namespace、reasoning 与流式文本事件；custom grammar、未实现的托管工具类型不会静默忽略，而是报错。web_search 仍只映射为网页搜索，不冒充原生托管事件。普通文本长度截断返回 `response.incomplete`；工具截断返回错误且不交付调用。
-- **Anthropic thinking 签名是占位值**：上游 GenAI 没有 Anthropic 意义上的签名，代理返回 `genai-compat-no-signature`。relay native 保留 Chat 能表达的历史思考元数据，不表示网页消费这些字段；不同供应商的加密 reasoning/signature 不可互换，Responses 不重建加密思考状态。
-- **图片以内联方式发送**：base64 图片会以 data URL 随请求体一并发送，体积约为原图的 4/3，因此大图会拉长请求体；代理不再调用网页的图片服务，也就不依赖任何前端令牌。只验证过 PNG，其他格式由平台侧解析能力决定。
-- **只有独立 reasoning 字段会被结构化透传**：`reasoning` / `reasoning_content` 会映射到客户端思考字段。上游若把分析写成未标记正文，代理不会猜测其类别。Anthropic 输出路径会过滤正文 `<think>...</think>` 标签；不使用网页历史中的标签内容来伪造实时思考。
-- **思考内容由上游决定，且不保证返回**：deepseek-pro 在 Pi 这类大提示词下（约 2.2 万 token，含 24 个工具 schema）经常完全不发 `reasoning_content`；换成等长的中性提示词则稳定返回。这不是代理丢字段，代理也不会补造。重复同一问题还会命中平台缓存，直接返回旧答案且不带思考。
-- **重复相同问题会命中平台缓存**：同一 `model` 与相同问题重复请求时，平台会在几十毫秒内直接返回上次答案，且不带任何思考增量。想观察思考应以新提问验证；不能据此认为模型不再推理。
-- **部分模型关闭思考后仍把分析写进正文**：GLM 在 `thinking: false` 时，正文会以未标记的英文分析开头（例如 `The user wants me to…`）；同模型开启思考后思考字段与正文均正常。DeepSeek 关闭思考后正文保持干净。这是模型侧行为，代理不猜测哪些句子属于分析，也不事后改写成思考。
-- **网页工具通道不是官方原生函数接口**：文本提示仍使用 action 封套，原生结构化输出优先于文本解析。仅接受明确闭合的协议，不再从裸 JSON、函数样式或 Markdown 示例猜测调用，不修补引号、不猜参数名或类型。重复键、非有限数、多封套、非法成员或截断均拒绝；Schema 不进行外部网络引用解析。Schema 合法仍不能证明模型复制内容正确。
-- **工具选择与并行约束由代理执行**：`none`、`required`、指定函数、`parallel_tool_calls=false`（含 Anthropic `disable_parallel_tool_use`）在交付前统一校验，违反约束整批拒绝，不再删除非法成员后交付剩余部分。这是代理验收，不是生成端 constrained decoding。
-- **输出长度由代理本地强制**：上游不执行 `maxToken`，代理按估算 token 在本地截断，普通文本截断时 Chat 的 `finish_reason` 与 Anthropic 的 `stop_reason` 会分别返回 `length` / `max_tokens`，Responses 发出 `response.incomplete`；若截断命中工具调用，则不发出工具调用并返回错误。预算包含思维链 token，因此对推理模型给很小的 `max_tokens` 时可能只产出思维链、正文为空。
-- **usage 是本地估算**：`prompt_tokens` / `input_tokens` / `completion_tokens` 均由代理按文本估算，不是上游真实计费值。
-- **思考支持开关，不支持档位或精确预算**：客户端推理参数映射为上游 `thinking` 布尔值。模型标为不提供开关、额度不足或上游未返回思考字段时，代理不会补造思考内容。`/v1/models` 的 `capabilities` 来自平台配置，不代表已逐模型保证所有组合都可用。
-- **上游超时与错误传播**：第一跳连接超时 10 秒、网络读取间隔超时 300 秒；relay 的上游网络读取间隔默认 1800 秒，均不等于工具请求默认 900 秒共享生成窗口。持续 ping 不延长该总窗口。上游错误、提前 EOF 或恢复耗尽以流式 `error` / 非流式 502 返回，不把错误当正文，不发送成功完成标记。已交付正文/思考后不自动重放请求。
-- **DeepSeek DSML 与 Kimi XTML**：支持明确闭合的 DeepSeek `invoke/parameter`（字符串原样保留、非字符串严格 JSON 解码）、既有 DSML call 变体以及 Kimi typed tools 通道；不补齐缺失标签。代码引用与 `<think>` 内的工具示例不是操作。
+- 学校平台决定模型供应、配额、延迟和上游空输出。元数据与附件处理阶段的过期认证恢复仍有已知缺口。
+- 仅提供三类协议的核心功能子集。不支持 Responses 服务端状态维护、custom grammar 约束、未实现的供应商内置托管工具、独立 Files API 以及供应商私有思考状态。Messages 协议中的 `genai-compat-no-signature` 仅作为兼容占位符。
+- `max_tokens` 由本地估算并限制，包含思考；`usage` 也是估算，不是厂商实际计费量。直连第一跳的普通文本截断有对应终态；经过 relay 时当前仅接受正常 `stop/tool_calls`，截断会报错。
+- 客户端断开或到期会关闭已经取得的 HTTP 响应与 socket。尚未收到上游响应头时，无法立即打断阻塞中的 HTTP 请求，也不能保证学校远端推理同步停止。
+- Schema 合法不保证生成的调用语义无害或逻辑正确。客户端仍须维护操作审计、安全环境隔离与实际测试验收；在未挂载任务监督器的标准客户端环境中，超出协议恢复预算后请求仍会直接中断。
 
-## 上下文探测工具
+## 开发与排查
 
-GenAI 平台上不同模型的上下文窗口不一样（128k ~ 1M 都有）。`context-probe` 工具用于**实测**某个模型的真实上下文长度，供 Claude Code 等前端安全地控制 prompt 大小。
-
-原理是在输入**最前端**放一个唯一标记（`ZEBRA`），再让模型复述它；能复述说明整个上下文都被保留，后端拒绝时其报错信息通常会给出精确上限（如 `maximum context length is 524288 tokens`）。
+在第一跳根目录下执行 `pixi run test` 运行测试套件。第二跳环境测试在其自有虚拟环境内运行，见[第二跳文档](https://github.com/FrozenYears/genai2agent-relay/blob/feat/native-first-streaming/README.md)。常用调试命令均从仓库根路径调起，参数说明见[工具使用说明](docs/TOOLS.md)：
 
 ```bash
-# 定量探测指定模型（在列出的尺寸上打点）
-pixi run context-probe --model chatglm --tokens 8192,131072,524288
-
-# 自动二分找出模型的上限（推荐）
-pixi run context-probe --model GPT-5.6-SOL --find
-
-# 快速扫描所有对话模型（较慢，谨慎使用）
-pixi run context-probe --all
+pixi run context-probe --help
+pixi run bench-speed --help
+pixi run bench-speed --models deepseek-pro --output docs/BENCH_speed.md
+pixi run python -B validation/native-first-endurance/run.py run --model deepseek-pro --stages 20 --max-feedback 8 --max-minutes 45 --stage-timeout 1200
 ```
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--model` | 要探测的模型 id（与 `--all` 二选一） | — |
-| `--all` | 扫描所有对话模型 | — |
-| `--tokens` | 逗号分隔的目标 token 尺寸列表 | 一组基准值 |
-| `--find` | 二分找出精确上下文上限 | 关闭 |
-| `--low` / `--high` | `--find` 的搜索区间 | `8192` / `2097152` |
-| `--max-output` | 每次探测的最大输出 token | `300` |
-| `--timeout` | 单次请求超时（秒） | `300` |
-| `--token` | JWT 或 `学号@密码`（覆盖 `.env` 的 `GENAI_TOKEN`） | — |
+测速、上下文探测和长期验收会发送真实模型请求并消耗学校额度；写入已有报告路径会覆盖文件，保留历史时请另选路径。排查先核对 `/health`、模型 ID 和三处认证，再看错误 `code`；心跳只表示连接仍在，不代表模型已有有效输出。日志不要包含令牌、base64 或完整文档。
 
-> 注意：`--find` 和较大的 `--tokens` 会向平台发送很大的请求体并消耗真实 token 额度；az 系列模型可能触发平台配额限制（报 `额度上限了`）。
+## 文档索引
 
-## 速度基准工具
+归档索引见 [docs/README.md](docs/README.md)；实现细节与演进历程见[架构说明](docs/STAGE_NATIVE_FIRST.md)，版本流转记录见 [CHANGELOG](CHANGELOG.md)。网络抓包记录、能力测试记录、Pi 测试细节、模型报告、基准测速数据以及工程记录统一存放于 `docs/` 目录下；`validation/` 下的自动化测试脚本与状态摘要保持同步维护；个人本地测试会话记录、环境缓存与真实秘钥排除在仓库之外。
 
-`bench-speed` 工具通过本地代理（默认 `http://127.0.0.1:31100`）逐一向每个对话模型发流式请求，测量两个指标：
-
-- **首字时间（TTFT）**：从发出请求到收到第一个内容或思维链增量。
-- **正文首字时间**：从发出请求到收到第一个正文（非思维链）增量。
-- **输出速度**：输出 token 数 ÷（总耗时 − 首字时间），即首字后的解码速度。
-
-模型顺序执行以避免并发干扰，每个模型先预热再取多次中位数；输出 token 优先取流末尾 `usage.completion_tokens`。
-
-```bash
-# 扫描 /v1/models 里的全部对话模型
-pixi run bench-speed
-
-# 只测指定模型，次数与输出上限可调
-pixi run bench-speed --models deepseek-chat,deepseek-pro --runs 5 --max-tokens 2048
-
-# 把 Markdown 报告写入文件
-pixi run bench-speed --output BENCH_speed.md
-```
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--base-url` | 代理地址 | `http://127.0.0.1:31100` |
-| `--api-key` | 代理 API key（或设置 `API_KEY` 环境变量） | — |
-| `--models` | 逗号分隔的模型 id，默认取 `/v1/models` 全部对话模型 | — |
-| `--runs` | 每个模型正式测量次数 | `3` |
-| `--warmup` | 每个模型预热次数（不计入结果） | `1` |
-| `--max-tokens` | 单次请求输出上限 | `512` |
-| `--timeout` | 单次请求超时（秒） | `300` |
-| `--prompt` | 测试用的用户消息 | 计数到 200 |
-| `--output` | 把 Markdown 报告写入该文件 | — |
-
-> 注意：被平台标记为不可用的模型（额度上限、`No available workers`）会在报告里记为失败，这不代表速度，而是上游状态。
-
-## 致谢
-
-本项目基于 [HeZeBang/GenAI2OpenAI](https://github.com/HeZeBang/GenAI2OpenAI) 开发，感谢原作者的工作。
-
-## 许可
-
-MIT License — 详见 LICENSE 文件。
+本项目初始设计承接自 [jollyxenon/shanghaitech-genai2api](https://github.com/jollyxenon/shanghaitech-genai2api) 与前序工作 [HeZeBang/GenAI2OpenAI](https://github.com/HeZeBang/GenAI2OpenAI)；第二跳实现源自 [negativegluon/genai2agent-relay](https://github.com/negativegluon/genai2agent-relay) 的独立中继设计。项目基于 [MIT License](LICENSE) 开源。

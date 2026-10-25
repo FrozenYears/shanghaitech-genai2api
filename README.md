@@ -5,7 +5,7 @@
 [快速开始](#快速开始) · [客户端配置](#客户端配置) · [重构对比](#与重构前的区别) · [实测](#模型实测) · [详细文档](docs/README.md)
 
 > [!NOTE]
-> 当前版本在两仓库的 `feat/native-first-streaming` 分支，尚未合并至 `main`。
+> 两个仓库均使用 `main` 分支，安装时保持版本一致。
 > 需学校 GenAI 网页权限，无需申请模型厂商或学校独立 API Key。
 
 ```mermaid
@@ -18,18 +18,18 @@ flowchart LR
 两跳名称沿用项目约定：客户端请求先到第二跳 relay，再到第一跳。
 
 - 本仓库：网页登录、附件处理、网页请求与严格工具解析。
-- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/feat/native-first-streaming)：协议转换，结构化工具与 SSE 转发。
+- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/main)：协议转换，结构化工具与 SSE 转发。
 - 本地 agent：执行工具、读写文件、运行命令；代理不执行这些操作。
 
 ## 快速开始
 
-需 Git、[Pixi](https://pixi.sh/) 与 [uv](https://docs.astral.sh/uv/)。以下为 Bash 命令（Linux / WSL）；Windows 命令见下方折叠项。
+需 Git、[Pixi](https://pixi.sh/) 与 [uv](https://docs.astral.sh/uv/)。以下为 Bash 命令（Linux / WSL）；Windows 命令直接列在下方。
 
 ### 1. 第一跳（shanghaitech-genai2api）
 
 ```bash
-git clone --branch feat/native-first-streaming https://github.com/FrozenYears/shanghaitech-genai2api.git
-git clone --branch feat/native-first-streaming https://github.com/FrozenYears/genai2agent-relay.git
+git clone --branch main https://github.com/FrozenYears/shanghaitech-genai2api.git
+git clone --branch main https://github.com/FrozenYears/genai2agent-relay.git
 cd shanghaitech-genai2api
 pixi install
 cp .env.example .env
@@ -93,9 +93,6 @@ PORT=31110
 
 ### Windows 与启动参数
 
-<details>
-<summary>展开 Windows 命令、环境路径与参数覆盖说明</summary>
-
 - 复制配置：`Copy-Item .env.example .env`。
 - 第一跳启动：`pwsh -File run-windows.ps1`，脚本会安装 Pixi 环境并使用本地缓存。
 - relay 安装：`uv pip install --python .venv/Scripts/python.exe -e .`。
@@ -109,8 +106,6 @@ pixi run serve --port 31100 --api-format both --empty-continuations 8 --tool-rep
 ```
 
 全部参数可用 `pixi run serve --help` 查看；`HOST` 只控制 relay，不控制第一跳监听地址。
-
-</details>
 
 ### 3. 检查连接
 

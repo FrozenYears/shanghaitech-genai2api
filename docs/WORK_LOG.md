@@ -1,5 +1,12 @@
 # 本地工作日志
 
+## main 发布入口与定向停服（2026-10-25）
+
+- 两仓库 README 的 Windows 安装命令直接展开，移除 Windows 的 details/summary 标签；其余客户端与附件折叠说明保留。安装命令和当前文档链接改用 FrozenYears 的 main，不再要求用户检出开发分支。
+- 获取两个 origin 的最新引用。relay 本地/远端 main 均为工作分支祖先；根仓库本地 main 另有4个 Windows 支持提交，合并需保留它们，不重置、不强推。
+- 定向停止工具登记的 `GenaiFirstHopAutoRecovery` 与 `GenaiRelayAutoRecovery` 进程树。Windows 项目进程、31100/31110及旧临时端口31200/31210均无残留；Ubuntu-24.04的用户/系统GenAI单元及相关进程均未发现运行项。
+- 对比停服前后快照，79个其他Windows监听项全部仍在；没有批量结束Python、关闭WSL、停止其他Windows/systemd服务或修改其启动配置。
+
 ## README 内容回填与两跳职责说明（2026-10-25）
 
 - 按用户要求恢复精简前的九行模型实测表（含表头和分隔行）；值与原记录一致，不重跑或改写模型结果。

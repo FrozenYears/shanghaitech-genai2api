@@ -15,3 +15,10 @@
 平台协议证据见 `GENAI_WEB_CAPABILITIES.md`；当前使用方法和支持边界以 README 为准。Pi 客户端实际验证见 `PI_REAL_WORLD_VALIDATION.md`：无用户插件时思考和搜索通过，图片仍有长延迟/超时；`@PDF` 不等于文档上传，显式原生 shell 上传成功不代表模型会自动执行工具。改动后同步 README 和 CHANGELOG。附件日志只记录数量、大小、解析长度和耗时，不打印令牌、base64 或完整文档。
 
 代理无服务端会话存储及 Files API。客户端需要发送完整历史。上游图片加载可能超时；单次成功不等于平台已稳定支持所有多轮组合，运行结果应分别记录。
+
+## 提交与远端同步
+
+- 每轮工作有仓库改动时，完成验证并提交后，必须推送对应仓库的当前工作分支；没有改动时不为同步制造空提交。推送失败须明确报告，不能将本地提交称为已更新远端。
+- 根仓库推送到 `https://github.com/FrozenYears/shanghaitech-genai2api`，独立的 `genai2agent-relay` 仓库推送到 `https://github.com/FrozenYears/genai2agent-relay`。两者分别提交、分别推送，不将嵌套仓库或本地凭据、缓存、原始验收材料误纳入根仓库。
+- 新分支首次推送设置 upstream tracking。默认不强推、不删除远端分支、不自动合并 `main`；原作者仓库只保留为 `upstream` 参考远端。
+

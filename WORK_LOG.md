@@ -1,0 +1,143 @@
+# 本地工作日志
+
+## 当前状态
+
+- 工作目标：修复工具调用截断、模型误报完成、工具不可见、Kimi K3 原生工具协议未执行，以及长时多轮工具工作的可靠性问题。
+- 当前根仓库分支：`feat/windows-platform`。
+- 当前 relay 子仓库分支：`main`。
+- 原 31100（第一跳）和 31110（relay）已按用户批准重启，健康检查均返回 HTTP 200；本日志写入时未再次停止它们。
+- 远端尚未推送。根仓库本地分支没有配置可用 upstream；relay 本地 `main` 相对 `origin/main` 领先 6 个提交。
+- 用户已有改动与未跟踪文件未纳入本轮提交：`CHANGELOG.md`、`.pixi-cache/`、`_diagnose_auth.py`、`_kimi_test.py`、启动脚本及 `genai2agent-relay/` 外层未跟踪目录状态按原样保留。
+
+## 已完成修复
+
+### 根代理
+
+- 当前 user 轮次携带完整工具定义和 JSON Schema。
+- 主工具协议改为 `@@ACTION@@...@@END_ACTION@@` JSON envelope；保留既有 `<tool_call>` 和 GenAI DSML 兼容解析。
+- user/tool-history 中的 `<think>`、tool/DSML 标签及 action 分隔符使用可逆 JSON Unicode 转义，避免模型把文件内容识别为控制语法。
+- action envelope 在移除 think/DSML 或处理 Markdown 引用之前解析；参数内部标记按原字符串恢复。
+- Markdown 代码引用、反引号文本中的 action/tool 标记不再触发执行。
+- Kimi K3 原生 XTML tools 通道增加严格解析：
+  - `<|open|>tools<|sep|>`、`call`、typed `argument`、`json` 参数块；
+  - string 原文保留；array/object/number/integer/boolean/null 按声明类型解码；
+  - 未知工具、重复参数、类型错误、坏 JSON、截断批次或部分批次均拒绝，不自动补全执行。
+- Chat、Anthropic、Responses 在必需工具调用未返回时返回错误，不再把普通文本报告为成功。
+- 上游 SSE 提前 EOF、工具调用被 `length` 截断或 action 标记本身截断时，不交付部分工具调用。
+- Anthropic 流式路径保留代码引用中的 `<think>` 字面文本，只过滤实际未引用的思考块。
+
+### Relay
+
+- action marker 检测排除闭合代码引用和合法 action 参数内容。
+- user 数据中的控制标记转义；assistant 历史调用不再被当成 user 数据误转义。
+- tool result 明确标记为“已经执行的结果”，要求模型在依赖操作完成后以普通文本结束，不重复同一 read。
+- action envelope 仍执行白名单、JSON Schema、大小、完整性和原子批次校验。
+
+## 真实模型验证
+
+测试均使用实际 GenAI 上游模型、实际 HTTP 服务和隔离目录中的真实文件/进程/SQLite/HTTP 服务，不使用模拟模型输出。
+
+### 模型
+
+- `deepseek-pro`：平台 ID，`owned_by=xinference`。
+- `Kimi-k3`：平台 ID，`owned_by=xinference`。
+
+### 长文件
+
+- 33,803 字节、256 行、含 Unicode、反斜杠、引号、尾部换行以及 think/tool/DSML/action 字面标记。
+- 两模型均完成 write → edit → read，最终 SHA-256：`29e64d5bb3f7a66c03f8600c2b545acd11541cc419dd29ac167003491b53edbc`。
+- Kimi 首次写入约 446 秒；DeepSeek 首次写入约 57 秒。单次样本不是延迟保证。
+- Kimi 曾出现一次原始参数复制错误：预期 8,389 字节，模型生成 8,390 字节；错误在上游工具参数中已存在，不是代理落盘截断。read 发现后 edit 修正，再次 read 通过。
+
+### 长时增量开发
+
+- Kimi：同一持久历史完成 12 个增量功能，50 次请求、45 次工具调用，逐阶段运行只读 Python verifier；81,511 字节逻辑源文件，Windows CRLF 磁盘基线 82,550 字节，固定 fixture 字节保持不变，全部验证通过。
+- DeepSeek：12 个增量功能，55 次请求、45 次工具调用，全部累计断言通过，固定 fixture 保持不变。
+- DeepSeek 有一个阶段在 verifier 已通过后继续优化，达到该阶段请求上限；下一阶段由新的 user task 继续。不能把它描述为始终自然收敛。
+- 3,202 行、约 317–320 KB 的既有源码局部 edit：Kimi 的 LF/CRLF 两种基线和 DeepSeek 的 CRLF 基线均逐字节通过，且运行实际 verifier。
+
+### 多类型工具
+
+实际覆盖 11 类工具：
+
+- `write`、`edit`、`read`
+- `run_python`
+- `glob`、`grep`
+- `command`
+- `sql_query`
+- `http_get`
+- `start_job`、`job_status`
+
+场景包含：无匹配搜索、命令非零退出后重跑、SQLite 参数绑定错误后修正、HTTP 404 后正常请求、后台任务 running 到终态、单 action envelope 内三个独立调用及结果回传。
+
+两个模型的 fresh broad-tool session 均正常结束；同一 Kimi 长会话在 fixture 补齐后也完成全部场景。初次缺失 fixture 的失败被保留为真实失败，不算成功。
+
+### Kimi 原生协议
+
+实测捕获到 Kimi 原生输出：
+
+```text
+<|open|>tools<|sep|>
+<|open|>call tool="command" index="1"<|sep|>
+<|open|>argument key="argv" type="array"<|sep|>["python","command_fixture.py","--check"]<|close|>argument<|sep|>
+<|close|>call<|sep|><|close|>tools<|sep|><|close|>response<|sep|><|close|>message<|sep|>
+```
+
+此前第一跳把它当普通正文，以 `end_turn` 结束，工具没有执行。新增严格 K3 parser 后恢复为 `command`，实际执行 exit code 0。格式参考公开的 Xinference Kimi K3 parser：
+
+- https://github.com/xorbitsai/inference/blob/main/xinference/model/llm/tool_parsers/kimi_k3_tool_parser.py
+- https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/tool_parsers/kimi_k3.py
+
+### 原端口部署验证
+
+用户批准重启后，原 31100/31110 使用新代码完成六条真实工作流：
+
+- Kimi：relay Chat、第一跳 Anthropic Messages、第一跳 Responses。
+- DeepSeek：relay Chat、第一跳 Anthropic Messages、第一跳 Responses。
+- 共实际执行 32 次工具；验收包含命令错误恢复、SQL、glob 和 HTTP 返回值，不以 HTTP 200 作为成功标准。
+- 六条工作流均通过并正常结束。
+
+## 验证结果
+
+- 根项目：`pixi run test` → **131 passed**。
+- relay：`python -m pytest tests -q` → **39 passed, 42 subtests passed**。
+- 根代理 Python 语法检查通过。
+- Kimi parser、跨协议参数保真、截断、坏批次、必需工具、引用文本和流式边界回归均通过。
+
+## 当前稳定性边界
+
+- 模型生成的长文本仍可能语义复制错误；合法 JSON 或 Schema 不能证明内容符合用户原意。
+- 长文件应优先局部 edit，不应要求模型反复全文重写。
+- 写入/编辑后必须 read 或运行实际 verifier；重要内容使用独立字节哈希。
+- relay 为安全校验会完整缓冲第一跳响应，双跳尤其是长输出的首事件延迟明显高于官方原生流式工具通道。
+- 本轮验证是有界的串行压力测试，不等价于任意小时级无人值守稳定性保证。
+- 原有服务的认证、上游平台状态、模型缓存和上下文上限仍可能影响体感。
+
+## 提交记录
+
+### 根仓库
+
+- `b841eed chore: checkpoint before tool transport fixes`
+- `b4cc31d fix: preserve tool call integrity`
+- `91344bf fix: preserve local model tool verification replies`
+- `9661357 fix: preserve tool action payloads`
+- `a50d0a2 fix: parse complete Kimi K3 native tool calls`
+- `9b7af87 chore: checkpoint before native tool transport fix`
+
+### relay 子仓库
+
+- `127d7e0 chore: checkpoint before tool transport investigation`
+- `795aff0 fix: escape action markers in tool context`
+- `5bc9fad fix: preserve quoted tool markers and clarify results`
+- `5ad2e8e chore: checkpoint before native tool transport fix`
+
+以上提交均为本地提交，尚未推送远端。
+
+## 证据与保留产物
+
+- `TEST_REPORT_deepseek_pro.md`：本地模型长文件、持续开发、宽工具覆盖和原生 K3 协议报告。
+- `validation/local-model-tools-2026-10-24.json`：8,389 字节工具闭环摘要、哈希和截断/恢复结果。
+- `validation/kimi-endurance-2026-10-24.json`：33 KB、320 KB、12 阶段开发、11 类工具和原端口部署结果。
+- `C:\Users\FrozenYears\AppData\Local\Temp\genai-localmodels-9djlpkl6`：前一轮模型工作流及原始上游捕获，按用户选择保留。
+- `C:\Users\FrozenYears\AppData\Local\Temp\kimi-endurance-2ffklxo2`：本轮 302 个隔离测试文件/捕获，约 2.1 MB，按用户选择保留。
+- 两个临时代理端口 31200/31210 已停止；原 31100/31110 按批准保持运行。

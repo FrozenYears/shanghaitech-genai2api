@@ -1,11 +1,10 @@
 import json
+import pytest
 
 from provider import anthropic, genai
 from provider.anthropic import (
     COMPAT_THINKING_SIGNATURE,
-    anthropic_allowed_tool_names,
     anthropic_messages_to_genai_format,
-    normalize_tool_input,
     parse_tool_arguments,
     stream_genai_as_anthropic,
 )
@@ -72,14 +71,11 @@ def test_anthropic_messages_convert_tool_history_to_genai_promptable_messages():
     _, messages, model = anthropic_messages_to_genai_format(body, "token")
 
     assert model == "GPT-5.5"
-    assert anthropic_allowed_tool_names(body) == {"read_file"}
-    assert messages[0]["role"] == "system"
-    assert "<tools>" in messages[0]["content"]
-    assert "read_file" in messages[0]["content"]
+    assert messages[0]["content"] == "You are Claude Code."
     assert any(
         message["role"] == "assistant"
-        and "<tool_call>" in message["content"]
-        and '"name": "read_file"' in message["content"]
+        and "toolu_01" in message["content"]
+        and "read_file" in message["content"]
         for message in messages
     )
     assert any(
@@ -96,7 +92,7 @@ def test_stream_genai_as_anthropic_emits_tool_use_blocks(monkeypatch):
         status_code = 200
         text = ""
 
-        def iter_lines(self):
+        def iter_lines(self, **kwargs):
             chunks = [
                 {
                     "choices": [
@@ -116,12 +112,18 @@ def test_stream_genai_as_anthropic_emits_tool_use_blocks(monkeypatch):
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
 
+        def close(self):
+            pass
+
     class DummyTokenManager:
         def force_refresh(self):
             return None
 
     class DummyConfig:
         token_manager = DummyTokenManager()
+        empty_continuations = 3
+        tool_request_timeout_seconds = 600.0
+        tool_repair_attempts = 3
 
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
     monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: FakeResponse())
@@ -133,7 +135,7 @@ def test_stream_genai_as_anthropic_emits_tool_use_blocks(monkeypatch):
             1000,
             "token",
             DummyConfig(),
-            allowed_tool_names={"Bash"},
+            tools=[{"type": "function", "function": {"name": "Bash", "parameters": {"type": "object"}}}],
         )
     )
 
@@ -156,12 +158,12 @@ def test_stream_genai_as_anthropic_emits_tool_use_blocks(monkeypatch):
     assert message_delta["delta"]["stop_reason"] == "tool_use"
 
 
-def test_stream_genai_as_anthropic_emits_bare_malformed_json_tool_use(monkeypatch):
+def test_stream_genai_as_anthropic_keeps_bare_malformed_json_as_text(monkeypatch):
     class FakeResponse:
         status_code = 200
         text = ""
 
-        def iter_lines(self):
+        def iter_lines(self, **kwargs):
             chunks = [
                 {
                     "choices": [
@@ -178,12 +180,18 @@ def test_stream_genai_as_anthropic_emits_bare_malformed_json_tool_use(monkeypatc
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
 
+        def close(self):
+            pass
+
     class DummyTokenManager:
         def force_refresh(self):
             return None
 
     class DummyConfig:
         token_manager = DummyTokenManager()
+        empty_continuations = 3
+        tool_request_timeout_seconds = 600.0
+        tool_repair_attempts = 3
 
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
     monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: FakeResponse())
@@ -195,7 +203,7 @@ def test_stream_genai_as_anthropic_emits_bare_malformed_json_tool_use(monkeypatc
             1000,
             "token",
             DummyConfig(),
-            allowed_tool_names={"Bash"},
+            tools=[{"type": "function", "function": {"name": "Bash", "parameters": {"type": "object"}}}],
         )
     )
 
@@ -205,14 +213,10 @@ def test_stream_genai_as_anthropic_emits_bare_malformed_json_tool_use(monkeypatc
         if event == "content_block_start"
         and data["content_block"]["type"] == "tool_use"
     ]
-    assert tool_starts[0]["content_block"]["name"] == "Bash"
-    input_delta = next(
-        data["delta"]["partial_json"]
-        for event, data in events
-        if event == "content_block_delta"
-        and data["delta"]["type"] == "input_json_delta"
-    )
-    assert json.loads(input_delta) == {"command": 'printf "$(pwd)"'}
+    assert tool_starts == []
+    text = "".join(data["delta"]["text"] for event, data in events
+                   if event == "content_block_delta" and data["delta"]["type"] == "text_delta")
+    assert text == '{"name": "Bash", "arguments": {"command": "printf "$(pwd)""}}'
 
 
 def test_stream_genai_as_anthropic_filters_split_thinking_blocks(monkeypatch):
@@ -220,7 +224,7 @@ def test_stream_genai_as_anthropic_filters_split_thinking_blocks(monkeypatch):
         status_code = 200
         text = ""
 
-        def iter_lines(self):
+        def iter_lines(self, **kwargs):
             chunks = [
                 {"choices": [{"delta": {"content": "<think>hidden"}, "finish_reason": None}]},
                 {"choices": [{"delta": {"content": " reasoning</think>\n\nvisible"}, "finish_reason": None}]},
@@ -229,12 +233,18 @@ def test_stream_genai_as_anthropic_filters_split_thinking_blocks(monkeypatch):
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
 
+        def close(self):
+            pass
+
     class DummyTokenManager:
         def force_refresh(self):
             return None
 
     class DummyConfig:
         token_manager = DummyTokenManager()
+        empty_continuations = 3
+        tool_request_timeout_seconds = 600.0
+        tool_repair_attempts = 3
 
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
     monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: FakeResponse())
@@ -258,28 +268,16 @@ def test_stream_genai_as_anthropic_filters_split_thinking_blocks(monkeypatch):
     assert text == "\n\nvisible"
 
 
-def test_parse_tool_arguments_unwraps_nested_json_strings():
+def test_parse_tool_arguments_preserves_nested_fields():
     assert parse_tool_arguments('{"arguments":"{\\"path\\": \\"README.md\\"}"}') == {
-        "path": "README.md"
+        "arguments": '{"path": "README.md"}',
     }
 
 
-def test_normalize_tool_input_maps_bash_arguments_string_to_command():
-    assert normalize_tool_input("Bash", '"pwd"') == {"command": "pwd"}
-    assert normalize_tool_input("Bash", '{"arguments": "pwd"}') == {"command": "pwd"}
-    assert normalize_tool_input("Bash", '{"arguments": {"command": "pwd"}}') == {"command": "pwd"}
-
-
-def test_normalize_tool_input_maps_claude_code_tool_aliases():
-    assert normalize_tool_input("Grep", {"cpattern": "Claude Code", "file_path": "README.md"}) == {
-        "pattern": "Claude Code",
-        "path": "README.md",
-    }
-    assert normalize_tool_input("Read", {"path": "README.md"}) == {"file_path": "README.md"}
-    assert normalize_tool_input("Glob", {"glob": "tests/*.py", "filePath": "/tmp/project"}) == {
-        "pattern": "tests/*.py",
-        "path": "/tmp/project",
-    }
+@pytest.mark.parametrize("arguments", ['"pwd"', "{command:'pwd'}", '{"a":1,"a":2}', '{"a":NaN}'])
+def test_parse_tool_arguments_rejects_non_json_objects(arguments):
+    with pytest.raises(ValueError):
+        parse_tool_arguments(arguments)
 
 
 def _dummy_config_with_upstream(monkeypatch, chunks):
@@ -287,9 +285,12 @@ def _dummy_config_with_upstream(monkeypatch, chunks):
         status_code = 200
         text = ""
 
-        def iter_lines(self):
+        def iter_lines(self, **kwargs):
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
+
+        def close(self):
+            pass
 
     class DummyTokenManager:
         def force_refresh(self):
@@ -297,6 +298,9 @@ def _dummy_config_with_upstream(monkeypatch, chunks):
 
     class DummyConfig:
         token_manager = DummyTokenManager()
+        empty_continuations = 3
+        tool_request_timeout_seconds = 600.0
+        tool_repair_attempts = 3
 
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
     monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: FakeResponse())
@@ -343,7 +347,7 @@ def test_stream_genai_as_anthropic_emits_thinking_block_before_text(monkeypatch)
     assert text == "答案"
 
 
-def test_stream_genai_as_anthropic_drops_reasoning_after_text(monkeypatch):
+def test_stream_genai_as_anthropic_preserves_reasoning_after_text(monkeypatch):
     config = _dummy_config_with_upstream(monkeypatch, [
         {"choices": [{"delta": {"content": "正文"}, "finish_reason": None}]},
         {"choices": [{"delta": {"reasoning_content": "迟到的思考"}, "finish_reason": None}]},
@@ -354,11 +358,8 @@ def test_stream_genai_as_anthropic_drops_reasoning_after_text(monkeypatch):
         [{"role": "user", "content": "提问"}], "chatglm", 1000, "token", config,
     ))
 
-    assert not any(event == "content_block_start" and data.get("content_block", {}).get("type") == "thinking"
-                   for event, data in events)
-    assert not any(
-        data.get("delta", {}).get("type") == "thinking_delta" for _, data in events
-    )
+    thinking = "".join(data.get("delta", {}).get("thinking", "") for _, data in events)
+    assert thinking == "迟到的思考"
 
 
 def test_anthropic_history_thinking_blocks_are_not_forwarded():

@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 
@@ -17,6 +18,24 @@ class Config:
     api_key: str | None
     debug: bool
     api_format: str = "both"  # "openai", "anthropic", or "both"
+    empty_continuations: int = 8
+    tool_request_timeout_seconds: float = 900.0
+    tool_repair_attempts: int = 3
+
+    def __post_init__(self):
+        if type(self.empty_continuations) is not int or not 0 <= self.empty_continuations <= 30:
+            raise ValueError("empty_continuations must be an integer between 0 and 30")
+        if type(self.tool_repair_attempts) is not int or not 0 <= self.tool_repair_attempts <= 10:
+            raise ValueError("tool_repair_attempts must be an integer between 0 and 10")
+        timeout = self.tool_request_timeout_seconds
+        if type(timeout) not in (int, float):
+            raise ValueError("tool_request_timeout_seconds must be a finite positive number")
+        try:
+            valid_timeout = math.isfinite(timeout) and timeout > 0
+        except OverflowError:
+            valid_timeout = False
+        if not valid_timeout:
+            raise ValueError("tool_request_timeout_seconds must be a finite positive number")
 
 
 GENAI_URL = "https://genai.shanghaitech.edu.cn/htk/chat/start/chat"

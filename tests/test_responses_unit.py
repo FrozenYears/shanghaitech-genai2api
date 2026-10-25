@@ -1,4 +1,5 @@
 import json
+import pytest
 
 from app import create_app
 from config import Config
@@ -31,9 +32,12 @@ def _fake_response(chunks):
         status_code = 200
         text = ""
 
-        def iter_lines(self):
+        def iter_lines(self, **kwargs):
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
+
+        def close(self):
+            pass
 
     return FakeResponse()
 
@@ -48,6 +52,9 @@ class DummyTokenManager:
 
 class DummyConfig:
     token_manager = DummyTokenManager()
+    empty_continuations = 3
+    tool_request_timeout_seconds = 600.0
+    tool_repair_attempts = 3
 
 
 def _patch_upstream(monkeypatch, chunks):
@@ -72,8 +79,8 @@ def test_responses_input_conversion_with_tools_and_reasoning_history():
 
     assert messages[0] == {"role": "system", "content": "你是助手"}
     assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
-    assert "<tool_call>" in messages[2]["content"]
-    assert '"name": "shell"' in messages[2]["content"]
+    assert "@@ACTION@@" in messages[2]["content"]
+    assert '"operation": "shell"' in messages[2]["content"]
     assert "<tool_call_id>call_1</tool_call_id>" in messages[3]["content"]
     assert "file.txt" in messages[3]["content"]
     assert "继续" in messages[3]["content"]
@@ -91,21 +98,20 @@ def test_responses_tools_flatten_namespace_and_mark_custom():
         {"type": "namespace", "name": "functions", "description": "", "tools": [
             {"type": "function", "name": "shell", "description": "run", "parameters": {"type": "object"}},
             {"type": "custom", "name": "apply_patch", "description": "patch",
-             "format": {"type": "grammar", "syntax": "lark", "definition": "start: patch"}},
+             "format": {"type": "text"}},
         ]},
         {"type": "function", "name": "top_level", "description": "", "parameters": {}},
     ])
 
-    assert [tool["function"]["name"] for tool in chat_tools] == ["shell", "apply_patch", "top_level"]
-    assert custom_names == {"apply_patch"}
+    assert [tool["function"]["name"] for tool in chat_tools] == ["functions.shell", "functions.apply_patch", "top_level"]
+    assert custom_names == {"functions.apply_patch"}
     assert chat_tools[1]["function"]["parameters"]["required"] == ["input"]
-    assert "start: patch" in chat_tools[1]["function"]["description"]
 
 
 def test_responses_tool_choice_mapping():
     assert responses_tool_choice_to_chat("none") == "none"
     assert responses_tool_choice_to_chat("required") == "required"
-    assert responses_tool_choice_to_chat("auto") is None
+    assert responses_tool_choice_to_chat("auto") == "auto"
     assert responses_tool_choice_to_chat({"type": "function", "name": "shell"}) == {
         "type": "function",
         "function": {"name": "shell"},
@@ -165,7 +171,7 @@ def test_responses_stream_function_call_arguments_are_json_string(monkeypatch):
             {"choices": [{"delta": {"content": '<tool_call>{"name": "shell", "arguments": {"command": ["ls"]}}</tool_call>'}, "finish_reason": None}]},
             {"choices": [{"delta": {}, "finish_reason": "stop"}]},
         ],
-        allowed_tool_names={"shell"},
+        tools=[{"type": "function", "function": {"name": "shell", "parameters": {"type": "object"}}}],
     )
 
     done_item = next(
@@ -194,7 +200,7 @@ def test_responses_stream_custom_tool_call(monkeypatch):
             {"choices": [{"delta": {"content": '<tool_call>{"name": "apply_patch", "arguments": {"input": "*** Begin Patch"}}</tool_call>'}, "finish_reason": None}]},
             {"choices": [{"delta": {}, "finish_reason": "stop"}]},
         ],
-        allowed_tool_names={"apply_patch"},
+        tools=responses_tools_to_chat_tools([{"type": "custom", "name": "apply_patch"}])[0],
         custom_tool_names={"apply_patch"},
     )
 
@@ -281,14 +287,91 @@ def test_responses_completed_echoes_request_fields(monkeypatch):
         [{"role": "user", "content": "hi"}], "chatglm", 100, DummyConfig(),
         response_meta={
             "tools": [{"type": "function", "name": "shell"}],
-            "tool_choice": "required",
-            "store": True,
+            "tool_choice": "auto",
+            "store": False,
             "parallel_tool_calls": False,
         },
     ))
 
     completed = events[-1][1]["response"]
     assert completed["tools"] == [{"type": "function", "name": "shell"}]
-    assert completed["tool_choice"] == "required"
-    assert completed["store"] is True
+    assert completed["tool_choice"] == "auto"
+    assert completed["store"] is False
     assert completed["parallel_tool_calls"] is False
+
+
+@pytest.mark.parametrize("fields", [
+    {"previous_response_id": "resp_old"},
+    {"store": True},
+    {"input": [{"type": "item_reference", "id": "item_old"}]},
+    {"input": [{"type": "function_call", "id": "item_not_call_id", "name": "run", "arguments": "{}"}]},
+    {"conversation": "conv_old"},
+    {"background": True},
+])
+def test_stateless_responses_rejects_remote_state_before_upstream(monkeypatch, fields):
+    called = []
+    monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: called.append(True))
+    app = create_app(Config(token_manager=DummyTokenManager(), port=0, api_key=None, debug=False, api_format="both"))
+    response = app.test_client().post("/v1/responses", json={"model": "chatglm", "input": "hi", **fields})
+    assert response.status_code == 400
+    assert called == []
+
+
+def test_native_custom_tool_retains_call_id_and_exact_free_text(monkeypatch):
+    text = "*** Begin Patch\n@@ACTION@@ <think>literal</think>\n*** End Patch"
+    events = _run_stream(monkeypatch, [
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_patch", "type": "function",
+            "function": {"name": "apply_patch", "arguments": json.dumps({"input": text})}}]}, "finish_reason": None}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ], tools=responses_tools_to_chat_tools([{"type": "custom", "name": "apply_patch"}])[0],
+       custom_tool_names={"apply_patch"}, tool_choice={"type": "function", "function": {"name": "apply_patch"}})
+    result = events[-1][1]["response"]["output"][0]
+    assert result["type"] == "custom_tool_call"
+    assert result["call_id"] == "call_patch"
+    assert result["input"] == text
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("kind", ["function", "custom"])
+def test_responses_namespace_roundtrip_and_named_choice(monkeypatch, stream, kind):
+    arguments = '{"input":"exact patch"}' if kind == "custom" else '{"command":"pwd"}'
+    _patch_upstream(monkeypatch, [
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_namespaced", "type": "function",
+            "function": {"name": "workspace.run", "arguments": arguments}}]}, "finish_reason": None}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ])
+    tool = {"type": kind, "name": "run"}
+    if kind == "function":
+        tool["parameters"] = {"type": "object"}
+    app = create_app(Config(token_manager=DummyTokenManager(), port=0, api_key=None, debug=False, api_format="both"))
+    response = app.test_client().post("/v1/responses", json={
+        "model": "chatglm", "stream": stream, "input": "run",
+        "tools": [{"type": "namespace", "name": "workspace", "tools": [tool]}],
+        "tool_choice": {"type": kind, "name": "run", "namespace": "workspace"},
+    })
+    assert response.status_code == 200
+    if stream:
+        events = _events(response.get_data(as_text=True).split("\n\n"))
+        data = events[-1][1]["response"]
+    else:
+        data = response.get_json()
+    item = data["output"][0]
+    assert item["name"] == "run"
+    assert item["namespace"] == "workspace"
+    assert item["call_id"] == "call_namespaced"
+    if kind == "custom":
+        assert item["input"] == "exact patch"
+    else:
+        assert item["arguments"] == arguments
+
+
+def test_responses_custom_grammar_rejected_before_upstream(monkeypatch):
+    called = []
+    monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: called.append(True))
+    app = create_app(Config(token_manager=DummyTokenManager(), port=0, api_key=None, debug=False, api_format="both"))
+    response = app.test_client().post("/v1/responses", json={
+        "model": "chatglm", "input": "run",
+        "tools": [{"type": "custom", "name": "patch", "format": {"type": "grammar", "syntax": "lark", "definition": "start: patch"}}],
+    })
+    assert response.status_code == 400
+    assert called == []

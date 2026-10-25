@@ -6,6 +6,10 @@ from flask import jsonify
 class UpstreamError(Exception):
     """上游 GenAI 连接失败或返回错误。"""
 
+    def __init__(self, message, code="upstream_error"):
+        super().__init__(message)
+        self.code = code
+
 
 def openai_error(message, error_type="invalid_request_error", code=None, status=400):
     """Return an OpenAI-formatted JSON error response."""
@@ -18,10 +22,10 @@ def openai_error(message, error_type="invalid_request_error", code=None, status=
     }), status
 
 
-def make_error_chunk(message):
+def make_error_chunk(message, code="upstream_error"):
     """流式响应里的错误事件，采用 OpenAI 的 error 对象形态。
 
     不能把错误文本塞进 delta.content：那样客户端会把它当成模型正常输出。
     """
-    error = {"error": {"message": message, "type": "upstream_error", "code": None}}
-    return f"data: {json.dumps(error, ensure_ascii=False)}\n\ndata: [DONE]\n\n"
+    error = {"error": {"message": message, "type": "upstream_error", "code": code}}
+    return f"data: {json.dumps(error, ensure_ascii=False)}\n\n"

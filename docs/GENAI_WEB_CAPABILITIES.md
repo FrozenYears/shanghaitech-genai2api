@@ -2,7 +2,7 @@
 
 调查时间：2026-09-17。入口：https://genai.shanghaitech.edu.cn/dashboard/analysis 。
 
-本报告记录调查时的平台与代理状态。后续功能已接入代理，当前用法见 [README](README.md#图片文档联网搜索与深度思考)，实现验证和未解决的平台限制见 [FEATURE_VALIDATION.md](FEATURE_VALIDATION.md)。
+本报告记录调查时的平台与代理状态。后续功能已接入代理，当前用法见 [README](../README.md)，实现验证和未解决的平台限制见 [FEATURE_VALIDATION.md](FEATURE_VALIDATION.md)。
 
 ## 结论与上一轮纠正
 

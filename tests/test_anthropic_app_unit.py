@@ -20,7 +20,7 @@ class FakeResponse:
     status_code = 200
     text = ""
 
-    def iter_lines(self):
+    def iter_lines(self, **kwargs):
         chunks = [
             {
                 "choices": [
@@ -39,6 +39,9 @@ class FakeResponse:
         ]
         for chunk in chunks:
             yield ("data: " + json.dumps(chunk)).encode()
+
+    def close(self):
+        pass
 
 
 def make_app(api_key=None):
@@ -106,7 +109,7 @@ def test_non_streaming_messages_route_returns_thinking_block(monkeypatch):
         status_code = 200
         text = ""
 
-        def iter_lines(self):
+        def iter_lines(self, **kwargs):
             chunks = [
                 {"choices": [{"delta": {"reasoning_content": "内部推理"}, "finish_reason": None}]},
                 {"choices": [{"delta": {"content": "对外回答"}, "finish_reason": None}]},
@@ -114,6 +117,9 @@ def test_non_streaming_messages_route_returns_thinking_block(monkeypatch):
             ]
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
+
+        def close(self):
+            pass
 
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
     monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: FakeResponse())

@@ -1,23 +1,17 @@
 import json
-import logging
-import ast
 import re
-import time
 import uuid
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Tuple
 
-from config import model_registry
 from provider.genai import estimate_messages_tokens, estimate_text_tokens, iter_genai_stream
-from tools.parsing import extract_tool_calls, find_tool_call_open, tool_call_prefix_len
-from tools.prompts import inject_tool_prompt, normalize_content, merge_content, flatten_message_content
+from tools.contracts import strict_json_loads, validate_tool_request
+from tools.parsing import CODE_QUOTE_RE, ACTION_CLOSE_MARKER, ACTION_OPEN_MARKER
+from tools.prompts import escape_tool_control_markers, inject_tool_prompt, normalize_content, merge_content, flatten_message_content
 from provider.features import is_web_search_tool
-
-logger = logging.getLogger(__name__)
 
 # 上游 GenAI 没有 Anthropic 的 thinking 签名，这里使用明确的兼容占位值，
 # 并且在把历史 thinking 块转回 GenAI 时会直接丢弃，不会伪造真实签名。
 COMPAT_THINKING_SIGNATURE = "genai-compat-no-signature"
-BARE_TOOL_CALL_RE = re.compile(r'\{\s*"name"\s*:\s*"')
 
 THINK_OPEN_PREFIX = "<think"
 THINK_CLOSE = "</think>"
@@ -59,58 +53,46 @@ def anthropic_content_to_text(content: Any) -> str:
     return "\n".join(part for part in text_parts if part)
 
 
-def json_dumps_compact(value: Any) -> str:
-    return json.dumps(value if value is not None else {}, ensure_ascii=False, separators=(",", ":"))
-
-
-def anthropic_allowed_tool_names(body: Dict[str, Any]) -> set[str]:
-    tools = body.get("tools")
-    if not isinstance(tools, list):
-        return set()
-    names = {
-        tool["name"]
-        for tool in tools
-        if isinstance(tool, dict) and isinstance(tool.get("name"), str) and tool["name"] and not is_web_search_tool(tool)
-    }
-    # tool_choice 指定单个工具时，只允许该工具，避免模型顺手调用其它工具。
-    choice = body.get("tool_choice")
-    if isinstance(choice, dict) and choice.get("type") == "tool":
-        name = choice.get("name")
-        if name in names:
-            return {name}
-    return names
-
-
 def anthropic_tools_to_openai_tools(tools: Any) -> List[Dict[str, Any]]:
     converted: List[Dict[str, Any]] = []
-    if not isinstance(tools, list):
+    if tools is None:
         return converted
+    if not isinstance(tools, list):
+        raise ValueError("tools must be an array")
 
     for tool in tools:
-        if not isinstance(tool, dict) or not tool.get("name") or is_web_search_tool(tool):
+        if not isinstance(tool, dict):
+            raise ValueError("Each tool must be an object")
+        if is_web_search_tool(tool):
             continue
+        if not tool.get("name") or "input_schema" not in tool:
+            raise ValueError("Tool name and input_schema are required")
         converted.append({
             "type": "function",
             "function": {
                 "name": tool.get("name"),
                 "description": tool.get("description", ""),
-                "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
+                "parameters": tool["input_schema"],
             },
         })
     return converted
 
 
 def anthropic_tool_choice_to_openai(tool_choice: Any) -> Any:
-    if not isinstance(tool_choice, dict):
+    if tool_choice is None:
         return None
+    if not isinstance(tool_choice, dict):
+        raise ValueError("Anthropic tool_choice must be an object")
+    if not isinstance(tool_choice.get("disable_parallel_tool_use", False), bool):
+        raise ValueError("disable_parallel_tool_use must be a boolean")
     choice_type = tool_choice.get("type")
     if choice_type == "any":
         return "required"
     if choice_type == "tool" and tool_choice.get("name"):
         return {"type": "function", "function": {"name": tool_choice["name"]}}
-    if choice_type == "none":
-        return "none"
-    return None
+    if choice_type in ("none", "auto"):
+        return choice_type
+    raise ValueError("Unsupported Anthropic tool_choice")
 
 
 def tool_result_content_to_text(content: Any) -> str:
@@ -186,6 +168,8 @@ def anthropic_message_to_genai_messages(message: Dict[str, Any]) -> List[Dict[st
             if isinstance(part, dict) and part.get("type") in ("image", "document"):
                 attachments.append(part)
     for result in tool_results:
+        if not isinstance(result.get("tool_use_id"), str) or not result["tool_use_id"]:
+            raise ValueError("Tool results require an explicit tool_use_id")
         nested = result.get("content")
         if isinstance(nested, list):
             attachments.extend(part for part in nested if isinstance(part, dict) and part.get("type") in ("image", "document"))
@@ -196,8 +180,15 @@ def anthropic_message_to_genai_messages(message: Dict[str, Any]) -> List[Dict[st
         role = "user"
     elif role == "assistant" and tool_uses:
         for tool_use in tool_uses:
-            call_obj = {"name": tool_use.get("name", ""), "arguments": tool_use.get("input", {})}
-            text += f"\n<tool_call>\n{json.dumps(call_obj, ensure_ascii=False)}\n</tool_call>"
+            if not isinstance(tool_use.get("id"), str) or not tool_use["id"]:
+                raise ValueError("Tool history requires an explicit tool_use id")
+            call_obj = {"calls": [{
+                "id": tool_use.get("id"),
+                "operation": tool_use.get("name", ""),
+                "parameters": tool_use.get("input", {}),
+            }]}
+            call_json = escape_tool_control_markers(json.dumps(call_obj, ensure_ascii=False))
+            text += f"\n{ACTION_OPEN_MARKER}{call_json}{ACTION_CLOSE_MARKER}"
         text = text.strip()
 
     content = merge_content(text, normalize_content(attachments)) if attachments else text
@@ -237,8 +228,10 @@ def anthropic_messages_to_genai_format(body: Dict[str, Any], token: str) -> Tupl
 
     openai_tools = anthropic_tools_to_openai_tools(body.get("tools"))
     tool_choice = anthropic_tool_choice_to_openai(body.get("tool_choice"))
+    validate_tool_request(openai_tools, tool_choice, not (body.get("tool_choice") or {}).get("disable_parallel_tool_use", False))
     if openai_tools and tool_choice != "none":
-        messages = inject_tool_prompt(messages, openai_tools, tool_choice)
+        messages = inject_tool_prompt(messages, openai_tools, tool_choice,
+                                      not (body.get("tool_choice") or {}).get("disable_parallel_tool_use", False))
 
     return system_prompt, messages, model
 
@@ -306,379 +299,109 @@ def filter_thinking_text_delta(text: str, state: Dict[str, Any]) -> str:
     return filter_thinking_and_dsml("".join(output))
 
 
-def strip_thinking_markup(text: str) -> str:
-    cleaned = re.sub(r"<think\b[^>]*>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
-    cleaned = re.sub(r"^\s*</think>\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*<think\b[^>]*>.*$", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
-    return cleaned.strip()
-
-
-def strip_markdown_json_fence(text: str) -> str:
-    stripped = text.strip()
-    match = re.fullmatch(r"```(?:json|JSON)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
-    return match.group(1).strip() if match else stripped
-
-
-def extract_balanced_json(text: str) -> Optional[str]:
-    starts = [index for index in (text.find("{"), text.find("[")) if index >= 0]
-    if not starts:
-        return None
-    start = min(starts)
-    stack: List[str] = []
-    in_string = False
-    escape = False
-    quote = ""
-    for index in range(start, len(text)):
-        char = text[index]
-        if in_string:
-            if escape:
-                escape = False
-            elif char == "\\":
-                escape = True
-            elif char == quote:
-                in_string = False
-            continue
-        if char in ("'", '"'):
-            in_string = True
-            quote = char
-            continue
-        if char in "{[":
-            stack.append("}" if char == "{" else "]")
-        elif char in "}]":
-            if not stack or char != stack[-1]:
-                return None
-            stack.pop()
-            if not stack:
-                return text[start:index + 1]
-    return None
-
-
-def quote_unquoted_json_keys(text: str) -> str:
-    return re.sub(r'([{,]\s*)([A-Za-z_][A-Za-z0-9_-]*)(\s*:)', r'\1"\2"\3', text)
-
-
-def parse_json_like_object(arguments: str) -> Optional[Any]:
-    candidates = []
-    cleaned = strip_markdown_json_fence(strip_thinking_markup(arguments))
-    if cleaned:
-        candidates.append(cleaned)
-    balanced = extract_balanced_json(cleaned or arguments)
-    if balanced and balanced not in candidates:
-        candidates.append(balanced)
-
-    for candidate in candidates:
-        for value in (candidate, quote_unquoted_json_keys(candidate)):
-            try:
-                return json.loads(value)
-            except json.JSONDecodeError:
-                pass
-            try:
-                return ast.literal_eval(value)
-            except (SyntaxError, ValueError):
-                pass
-    return None
+def _filter_thinking_outside_code(text: str, state: Dict[str, Any]) -> str:
+    parts = []
+    cursor = 0
+    for quotation in CODE_QUOTE_RE.finditer(text):
+        parts.append(filter_thinking_text_delta(text[cursor:quotation.start()], state))
+        if not state.get("in_thinking"):
+            parts.append(quotation.group())
+        cursor = quotation.end()
+    parts.append(filter_thinking_text_delta(text[cursor:], state))
+    return "".join(parts)
 
 
 def parse_tool_arguments(arguments: Any) -> Dict[str, Any]:
-    if isinstance(arguments, dict):
-        if set(arguments) == {"arguments"}:
-            nested_value = arguments.get("arguments")
-            if isinstance(nested_value, dict):
-                return parse_tool_arguments(nested_value)
-            if isinstance(nested_value, str):
-                return parse_tool_arguments(nested_value)
-        return arguments
-    if not isinstance(arguments, str) or not arguments.strip():
-        return {}
-    parsed = parse_json_like_object(arguments)
-    if parsed is None:
-        return {"arguments": arguments}
-    if isinstance(parsed, str):
-        nested = parse_tool_arguments(parsed)
-        return nested if nested else {"arguments": parsed}
-    if isinstance(parsed, dict):
-        return parse_tool_arguments(parsed)
-    return {"arguments": parsed}
-
-
-def normalize_tool_input(tool_name: str, arguments: Any) -> Dict[str, Any]:
-    parsed = parse_tool_arguments(arguments)
-    aliases = {
-        "Grep": {
-            "cpattern": "pattern",
-            "regex": "pattern",
-            "file_path": "path",
-            "filePath": "path",
-        },
-        "Glob": {
-            "glob": "pattern",
-            "file_path": "path",
-            "filePath": "path",
-        },
-        "Read": {
-            "path": "file_path",
-            "filePath": "file_path",
-        },
-    }
-    for alias, canonical in aliases.get(tool_name, {}).items():
-        if canonical not in parsed and alias in parsed:
-            parsed[canonical] = parsed.pop(alias)
-
-    if tool_name == "Bash" and "command" not in parsed:
-        value = parsed.get("arguments")
-        if isinstance(value, str) and value:
-            return {"command": value}
-        if isinstance(value, dict):
-            nested = normalize_tool_input(tool_name, value)
-            if nested.get("command"):
-                return nested
+    """只解码真实 JSON 对象，不修补或改写工具参数。"""
+    parsed = strict_json_loads(arguments) if isinstance(arguments, str) else arguments
+    if not isinstance(parsed, dict):
+        raise ValueError("Tool arguments must be a JSON object")
     return parsed
 
 
-def tool_input_json(tool_name: str, arguments: Any) -> str:
-    return json_dumps_compact(normalize_tool_input(tool_name, arguments))
-
-
 def stream_genai_as_anthropic(
-    messages: List[Dict[str, Any]],
-    model: str,
-    max_tokens: int,
-    token: str,
-    config: Any,
-    allowed_tool_names: Optional[set[str]] = None,
-    upstream_options: Optional[Dict[str, Any]] = None,
+    messages: List[Dict[str, Any]], model: str, max_tokens: int, token: str, config: Any,
+    tools=None, tool_choice=None, parallel_tool_calls=True, upstream_options=None,
 ) -> Generator[str, None, None]:
-    """Stream GenAI response in Anthropic Messages API format."""
-    started_at = time.monotonic()
-    first_token_at = None
-    content_parts: List[str] = []
-    reasoning_parts: List[str] = []
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
     input_tokens = estimate_messages_tokens(messages)
-
-    # 取出最后一条 user 消息作为当前提问（chatInfo），其余作为历史
+    history = list(messages)
     chat_info = ""
-    history_messages = list(messages)
-    for index in range(len(history_messages) - 1, -1, -1):
-        if history_messages[index].get("role") == "user":
-            chat_info = flatten_message_content(history_messages[index].get("content", ""))
-            del history_messages[index]
+    for index in range(len(history) - 1, -1, -1):
+        if history[index].get("role") == "user":
+            chat_info = flatten_message_content(history.pop(index).get("content", ""))
             break
 
-    def write_sse(event: str, data: Dict[str, Any]) -> str:
-        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
+    def sse(event, data):
+        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-    yield write_sse("message_start", {
-        "type": "message_start",
-        "message": {
-            "id": message_id,
-            "type": "message",
-            "role": "assistant",
-            "model": model,
-            "content": [],
-            "stop_reason": None,
-            "stop_sequence": None,
-            "usage": {"input_tokens": input_tokens, "output_tokens": 0},
-        },
-    })
+    yield sse("message_start", {"type": "message_start", "message": {
+        "id": message_id, "type": "message", "role": "assistant", "model": model,
+        "content": [], "stop_reason": None, "stop_sequence": None,
+        "usage": {"input_tokens": input_tokens, "output_tokens": 0},
+    }})
+    index = -1
+    block_type = None
+    output_tokens = 0
+    thinking_state = {"in_thinking": False}
 
-    next_index = 0
-    thinking_index = None
-    text_index = None
-    text_block_open = False
-    text_block_done = False
-    tool_detected = False
-    buffer = ""
-    tool_buffer = ""
-    thinking_state: Dict[str, Any] = {"in_thinking": False}
+    def close_block():
+        if block_type == "thinking":
+            yield sse("content_block_delta", {"type": "content_block_delta", "index": index,
+                "delta": {"type": "signature_delta", "signature": COMPAT_THINKING_SIGNATURE}})
+        if block_type is not None:
+            yield sse("content_block_stop", {"type": "content_block_stop", "index": index})
 
-    def open_thinking_block():
-        nonlocal thinking_index, next_index
-        thinking_index = next_index
-        next_index += 1
-        return write_sse("content_block_start", {
-            "type": "content_block_start",
-            "index": thinking_index,
-            "content_block": {"type": "thinking", "thinking": "", "signature": ""},
-        })
-
-    def close_thinking_block():
-        nonlocal thinking_index
-        if thinking_index is None:
-            return
-        index = thinking_index
-        thinking_index = None
-        yield write_sse("content_block_delta", {
-            "type": "content_block_delta",
-            "index": index,
-            "delta": {"type": "signature_delta", "signature": COMPAT_THINKING_SIGNATURE},
-        })
-        yield write_sse("content_block_stop", {"type": "content_block_stop", "index": index})
-
-    def emit_text(text: str):
-        nonlocal first_token_at, text_index, next_index, text_block_open
-        if not text:
-            return
-        if first_token_at is None:
-            first_token_at = time.monotonic()
-        if not text_block_open:
-            text_index = next_index
-            next_index += 1
-            text_block_open = True
-            yield write_sse("content_block_start", {
-                "type": "content_block_start",
-                "index": text_index,
-                "content_block": {"type": "text", "text": ""},
-            })
-        content_parts.append(text)
-        yield write_sse("content_block_delta", {
-            "type": "content_block_delta",
-            "index": text_index,
-            "delta": {"type": "text_delta", "text": text},
-        })
-
-    def close_text_block():
-        nonlocal text_block_open, text_block_done
-        if text_block_open and not text_block_done:
-            text_block_done = True
-            yield write_sse("content_block_stop", {"type": "content_block_stop", "index": text_index})
-
-    for event in iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token=token, upstream_options=upstream_options):
-        if event["type"] == "error":
-            yield write_sse("error", {
-                "type": "error",
-                "error": {"type": "api_error", "message": event["message"]},
-            })
-            return
-
-        if event["type"] == "delta":
-            reasoning = event.get("reasoning")
-            # thinking block 必须排在所有正文之前，正文开始后无法再插入
-            if reasoning and not (text_block_open or text_block_done or tool_detected):
-                if thinking_index is None:
-                    yield open_thinking_block()
-                reasoning_parts.append(reasoning)
-                yield write_sse("content_block_delta", {
-                    "type": "content_block_delta",
-                    "index": thinking_index,
-                    "delta": {"type": "thinking_delta", "thinking": reasoning},
-                })
-
-            content = event.get("content")
-            if content:
-                content = filter_thinking_text_delta(content, thinking_state)
-            if not content:
+    events = iter_genai_stream(chat_info, history, model, max_tokens, config, token=token,
+                               upstream_options=upstream_options, recover_empty=bool(tools),
+                               tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls)
+    try:
+        for event in events:
+            if event["type"] == "heartbeat":
+                yield sse("ping", {"type": "ping"})
                 continue
-
-            if thinking_index is not None:
-                yield from close_thinking_block()
-
-            if tool_detected:
-                tool_buffer += content
+            if event["type"] == "error":
+                yield sse("error", {"type": "error", "error": {
+                    "type": "api_error", "message": event["message"],
+                    "code": event.get("code", "upstream_error"),
+                }})
+                return
+            if event["type"] == "delta":
+                for field, target in (("reasoning", "thinking"), ("content", "text")):
+                    value = event.get(field)
+                    if not value:
+                        continue
+                    if target == "text":
+                        value = _filter_thinking_outside_code(value, thinking_state)
+                    if not value:
+                        continue
+                    if block_type != target:
+                        yield from close_block()
+                        index += 1
+                        block_type = target
+                        block = {"type": target, target: ""}
+                        if target == "thinking":
+                            block["signature"] = ""
+                        yield sse("content_block_start", {"type": "content_block_start", "index": index, "content_block": block})
+                    output_tokens += estimate_text_tokens(value)
+                    yield sse("content_block_delta", {"type": "content_block_delta", "index": index,
+                        "delta": {"type": f"{target}_delta", target: value}})
                 continue
-
-            buffer += content
-            tag_pos = find_tool_call_open(buffer)
-            if tag_pos >= 0:
-                yield from emit_text(buffer[:tag_pos])
-                tool_detected = True
-                tool_buffer = buffer[tag_pos:]
-                buffer = ""
-                continue
-
-            bare_tool_match = BARE_TOOL_CALL_RE.search(buffer) if allowed_tool_names else None
-            if bare_tool_match:
-                yield from emit_text(buffer[:bare_tool_match.start()])
-                tool_detected = True
-                tool_buffer = buffer[bare_tool_match.start():]
-                buffer = ""
-                continue
-
-            if allowed_tool_names and text_index is None and buffer.lstrip().startswith("{"):
-                continue
-
-            prefix_len = tool_call_prefix_len(buffer)
-            if prefix_len > 0:
-                yield from emit_text(buffer[:-prefix_len])
-                buffer = buffer[-prefix_len:]
-            else:
-                yield from emit_text(buffer)
-                buffer = ""
-            continue
-
-        # done：先冲刷残留文本，再输出工具调用
-        stop_reason = "max_tokens" if event.get("finish_reason") == "length" else "end_turn"
-        if tool_detected:
-            tool_buffer += buffer
-            buffer = ""
-            tool_calls, remaining = extract_tool_calls(
-                tool_buffer,
-                allowed_tool_names=allowed_tool_names,
-            )
-            if tool_calls:
-                if remaining:
-                    yield from emit_text(remaining)
-                yield from close_thinking_block()
-                yield from close_text_block()
-
-                for offset, tool_call in enumerate(tool_calls):
-                    function = tool_call.get("function", {})
-                    block_index = next_index + offset
-                    tool_id = tool_call.get("id") or f"toolu_genai_{uuid.uuid4().hex[:24]}"
-                    tool_name = function.get("name") or "tool"
-                    yield write_sse("content_block_start", {
-                        "type": "content_block_start",
-                        "index": block_index,
-                        "content_block": {
-                            "type": "tool_use",
-                            "id": tool_id,
-                            "name": tool_name,
-                            "input": {},
-                        },
-                    })
-                    yield write_sse("content_block_delta", {
-                        "type": "content_block_delta",
-                        "index": block_index,
-                        "delta": {
-                            "type": "input_json_delta",
-                            "partial_json": tool_input_json(tool_name, function.get("arguments", "{}")),
-                        },
-                    })
-                    yield write_sse("content_block_stop", {
-                        "type": "content_block_stop",
-                        "index": block_index,
-                    })
-                next_index += len(tool_calls)
-                stop_reason = "tool_use"
-            else:
-                logger.warning("Tool tag detected but parsing failed; emitting as text")
-                yield from emit_text(remaining if remaining is not None else tool_buffer)
-        else:
-            yield from emit_text(buffer)
-
-        yield from close_thinking_block()
-        yield from close_text_block()
-
-        # Calculate output tokens（含思维链）
-        output_text = "".join(content_parts)
-        output_tokens = estimate_text_tokens(output_text + "".join(reasoning_parts))
-
-        yield write_sse("message_delta", {
-            "type": "message_delta",
-            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-            "usage": {"output_tokens": output_tokens},
-        })
-
-        yield write_sse("message_stop", {"type": "message_stop"})
-
-        total_elapsed = time.monotonic() - started_at
-        ttft_ms = (first_token_at - started_at) * 1000 if first_token_at else 0
-        logger.info(
-            "stream metrics model=%s output_chars=%d output_tokens=%d ttft_ms=%.0f total=%.2fs",
-            model,
-            len(output_text),
-            output_tokens,
-            ttft_ms,
-            total_elapsed,
-        )
-        return
+            if event["type"] == "done":
+                yield from close_block()
+                calls = event["tool_calls"]
+                for call in calls:
+                    index += 1
+                    function = call["function"]
+                    yield sse("content_block_start", {"type": "content_block_start", "index": index,
+                        "content_block": {"type": "tool_use", "id": call["id"], "name": function["name"], "input": {}}})
+                    yield sse("content_block_delta", {"type": "content_block_delta", "index": index,
+                        "delta": {"type": "input_json_delta", "partial_json": function["arguments"]}})
+                    yield sse("content_block_stop", {"type": "content_block_stop", "index": index})
+                stop = "tool_use" if calls else ("max_tokens" if event.get("finish_reason") == "length" else "end_turn")
+                yield sse("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
+                    "usage": {"output_tokens": output_tokens}})
+                yield sse("message_stop", {"type": "message_stop"})
+                return
+    finally:
+        events.close()

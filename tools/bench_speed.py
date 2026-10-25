@@ -11,7 +11,7 @@ Usage:
     pixi run bench-speed
     pixi run bench-speed --models chatglm,deepseek-chat --runs 5
     pixi run bench-speed --runs 1 --max-tokens 256
-    pixi run bench-speed --output BENCH_speed.md
+    pixi run bench-speed --output docs/BENCH_speed.md
 """
 
 import argparse

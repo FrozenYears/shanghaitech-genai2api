@@ -14,6 +14,7 @@ from provider.responses import (
 from tools.prompts import inject_tool_prompt
 from provider.features import prepare_request
 from errors import UpstreamError
+from tools.contracts import validate_tool_request
 
 logger = logging.getLogger(__name__)
 
@@ -34,31 +35,30 @@ def responses_error(message: str, error_type: str = "invalid_request_error", cod
 
 def _build_request(body):
     """把 Responses 请求转换成 GenAI messages 和生成器参数。"""
+    if body.get("previous_response_id") is not None:
+        raise ValueError("previous_response_id is not supported; provide complete input history")
+    if body.get("store") not in (None, False):
+        raise ValueError("store=true is not supported")
+    if body.get("conversation") is not None or body.get("background"):
+        raise ValueError("Remote conversations and background responses are not supported")
     model = body.get("model", "GPT-5.5")
     max_output_tokens = body.get("max_output_tokens")
     max_tokens = max_output_tokens or 30000
 
     chat_tools, custom_tool_names = responses_tools_to_chat_tools(body.get("tools"))
     tool_choice = responses_tool_choice_to_chat(body.get("tool_choice"))
+    validate_tool_request(chat_tools, tool_choice, body.get("parallel_tool_calls", True))
     messages = responses_input_to_genai_messages(body.get("input"), body.get("instructions"))
 
     if chat_tools and tool_choice != "none":
-        messages = inject_tool_prompt(messages, chat_tools, tool_choice)
+        messages = inject_tool_prompt(messages, chat_tools, tool_choice, body.get("parallel_tool_calls", True))
 
-    allowed_tool_names = {
-        tool["function"]["name"] for tool in chat_tools if tool.get("function", {}).get("name")
-    }
-    # tool_choice 指定单个函数时收窄允许集合，避免模型顺手调用其它工具。
-    if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
-        restricted = (tool_choice.get("function") or {}).get("name")
-        if restricted in allowed_tool_names:
-            allowed_tool_names = {restricted}
     return (
         messages,
         model,
         max_tokens,
         custom_tool_names,
-        allowed_tool_names or None,
+        chat_tools,
         max_output_tokens,
     )
 
@@ -84,7 +84,7 @@ def responses():
             model,
             max_tokens,
             custom_tool_names,
-            allowed_tool_names,
+            chat_tools,
             max_output_tokens,
         ) = _build_request(body)
 
@@ -96,7 +96,7 @@ def responses():
             request_id,
             model,
             stream,
-            len(allowed_tool_names or []),
+            len(chat_tools),
             len(messages),
         )
 
@@ -106,7 +106,9 @@ def responses():
             upstream_options=upstream_options,
             instructions=body.get("instructions"),
             custom_tool_names=custom_tool_names,
-            allowed_tool_names=allowed_tool_names,
+            tools=chat_tools,
+            tool_choice=responses_tool_choice_to_chat(body.get("tool_choice")),
+            parallel_tool_calls=body.get("parallel_tool_calls", True),
             max_output_tokens=max_output_tokens,
             response_meta={
                 "tools": body.get("tools") or [],
@@ -150,6 +152,7 @@ def responses():
                 return responses_error(
                     event_data.get("message", "Upstream error"),
                     error_type="api_error",
+                    code=event_data.get("code"),
                     status=502,
                 )
             if event_name in ("response.completed", "response.incomplete"):
@@ -162,7 +165,7 @@ def responses():
     except ValueError as e:
         return responses_error(str(e), status=400)
     except UpstreamError as e:
-        return responses_error(str(e), error_type="api_error", status=502)
+        return responses_error(str(e), error_type="api_error", code=e.code, status=502)
     except Exception as e:
         logger.exception("[%s] Unhandled error", request_id)
         return responses_error(str(e), error_type="api_error", status=500)

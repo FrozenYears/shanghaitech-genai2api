@@ -1,0 +1,35 @@
+# 仅通过 --config 应用于验收子进程，不写入用户全局配置。
+autoResume: false
+disabledProviders:
+  - native
+  - agents-md
+  - claude
+  - claude-plugins
+  - codex
+  - gemini
+  - opencode
+  - cursor
+  - github
+  - windsurf
+retry:
+  enabled: false
+  modelFallback: false
+  usageAwareFallback: false
+contextPromotion:
+  enabled: false
+compaction:
+  enabled: false
+advisor:
+  enabled: false
+memory:
+  enabled: false
+providers:
+  cacheWarming: off
+features:
+  unexpectedStopDetection: none
+async:
+  enabled: false
+tools:
+  format: native
+  xdev: false
+  approvalMode: write

@@ -9,7 +9,7 @@ readme = "README.md"
 
 [tasks]
 serve = "python main.py"
-test = "pytest"
+test = "pytest tests"
 context-probe = "python tools/context_probe.py"
 bench-speed = "python tools/bench_speed.py"
 
@@ -22,6 +22,7 @@ flask-cors = ">=4.0.0"
 pycryptodome = ">=3.20.0"
 requests = ">=2.32.5"
 python-dotenv = ">=1.0.0"
+jsonschema = ">=4.20,<5"
 
 [feature.dev.pypi-dependencies]
 pytest = ">=8.0.0"

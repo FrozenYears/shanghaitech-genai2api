@@ -1,297 +1,296 @@
 # GenAI2OpenAI
 
-将上海科技大学 GenAI 平台接入 Claude Code、Codex CLI 等客户端的代理服务，同时提供 Anthropic Messages、OpenAI Chat Completions 与 OpenAI Responses 三种接口。
+把上海科技大学 GenAI 网页模型接入本地 agent，提供 Chat Completions、Messages 与 Responses 兼容接口。
 
-A proxy that connects ShanghaiTech's GenAI platform to Claude Code, Codex CLI and other clients, exposing the Anthropic Messages, OpenAI Chat Completions and OpenAI Responses APIs.
+[快速开始](#快速开始) · [客户端配置](#客户端配置) · [重构对比](#与重构前的区别) · [实测](#模型实测) · [详细文档](docs/README.md)
+
+> [!NOTE]
+> 两个仓库均使用 `main` 分支，安装时保持版本一致。
+> 需学校 GenAI 网页权限，无需申请模型厂商或学校独立 API Key。
+
+```mermaid
+flowchart LR
+    A[本地 agent] --> R["第二跳 · 31110<br/>genai2agent-relay"]
+    R --> F["第一跳 · 31100<br/>shanghaitech-genai2api"]
+    F --> W[学校 GenAI 网页后端]
+```
+
+两跳名称沿用项目约定：客户端请求先到第二跳 relay，再到第一跳。
+
+- 本仓库：网页登录、附件处理、网页请求与严格工具解析。
+- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/main)：协议转换，结构化工具与 SSE 转发。
+- 本地 agent：执行工具、读写文件、运行命令；代理不执行这些操作。
 
 ## 快速开始
 
-### 1. 安装
+需 Git、[Pixi](https://pixi.sh/) 与 [uv](https://docs.astral.sh/uv/)。以下为 Bash 命令（Linux / WSL）；Windows 命令直接列在下方。
+
+### 1. 第一跳（shanghaitech-genai2api）
 
 ```bash
+git clone --branch main https://github.com/FrozenYears/shanghaitech-genai2api.git
+git clone --branch main https://github.com/FrozenYears/genai2agent-relay.git
+cd shanghaitech-genai2api
 pixi install
+cp .env.example .env
 ```
 
-### 2. 配置环境变量
-
-在项目根目录创建 `.env`（可复制 `.env.example`），例如：
+编辑本仓库 `.env`：
 
 ```dotenv
-GENAI_TOKEN=学号@密码
+GENAI_TOKEN=student_id@password
+API_KEY=replace-with-first-hop-key
 PORT=31100
 API_FORMAT=both
+GENAI_EMPTY_CONTINUATIONS=8
+GENAI_TOOL_REPAIR_ATTEMPTS=3
+GENAI_TOOL_REQUEST_TIMEOUT_SECONDS=900
 ```
 
-`GENAI_TOKEN` 也可以填写 JWT。`.env` 已被 Git 忽略，不会提交凭据；图片上传所需的令牌由代理从前端脚本自动获取，无需手工配置。
-
-### 3. 启动代理
-
-配置 `.env` 后可直接启动：
+- `GENAI_TOKEN`：学号密码或网页 JWT；学号密码模式经 CAS 登录并尝试刷新。
+- `API_KEY`：第一跳本地密钥，填入 relay 的 `UPSTREAM_API_KEY`。
+- 恢复参数保留默认即可；命令行参数可覆盖 `.env`。
 
 ```bash
 pixi run serve
 ```
 
-命令行参数可以覆盖 `.env` 中的设置：
+> [!WARNING]
+> 第一跳当前监听 `0.0.0.0`，不支持通过 `HOST` 改为回环地址。
+> 请设置本地 Key 并限制网络访问；切勿暴露公网或提交 `.env`。
+
+### 2. 第二跳（genai2agent-relay）
+
+在两仓库的父目录下另开终端：
 
 ```bash
-pixi run serve --port 31200 --api-format anthropic
+cd genai2agent-relay
+uv venv .venv
+uv pip install --python .venv/bin/python -e .
+cp .env.example .env
 ```
 
-也可以直接运行任意 `pixi run python main.py ...` 命令。
+编辑 relay 的 `.env`，并保持两跳同时运行：
 
-手动获取 JWT：前往 [GenAI 对话平台](https://genai.shanghaitech.edu.cn/)，F12 打开 Network，发送消息后从 `chat` 请求头中复制 `x-access-token`。
-
-### 4. 配置 Claude Code
-
-设置环境变量（写入 `~/.bashrc` 或 `~/.zshrc`）：
+```dotenv
+UPSTREAM_BASE_URL=http://127.0.0.1:31100
+UPSTREAM_TOOL_MODE=native
+UPSTREAM_API_KEY=replace-with-first-hop-key
+RELAY_API_KEY=replace-with-relay-key
+HOST=127.0.0.1
+PORT=31110
+```
 
 ```bash
-export ANTHROPIC_BASE_URL="http://127.0.0.1:31100"
-export ANTHROPIC_AUTH_TOKEN="local-proxy"   # 如果设了 --api-key，改成同一个值
-export ANTHROPIC_MODEL="chatglm"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="MiniMax-M1"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="deepseek-pro"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="chatglm"
-export ANTHROPIC_REASONING_MODEL="MiniMax-M1"
+.venv/bin/python main.py
 ```
 
-### 5. 配置项目设置（减少权限弹窗）
+| 凭据 | 谁使用 |
+| --- | --- |
+| `GENAI_TOKEN` | 第一跳登录学校；不交给客户端 |
+| `API_KEY` = `UPSTREAM_API_KEY` | relay 访问第一跳，两处值相同 |
+| `RELAY_API_KEY` | 客户端访问 relay，另设一个值 |
 
-在项目根目录创建 `.claude/settings.json`：
+### Windows 与启动参数
 
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(pixi run *)",
-      "Bash(python *)",
-      "Bash(curl *localhost*)"
-    ]
-  }
-}
-```
+- 复制配置：`Copy-Item .env.example .env`。
+- 第一跳启动：`pwsh -File run-windows.ps1`，脚本会安装 Pixi 环境并使用本地缓存。
+- relay 安装：`uv pip install --python .venv/Scripts/python.exe -e .`。
+- relay 启动：`.venv/Scripts/python.exe main.py`。
+- WSL 与 Windows 各自建环境，不共用 `.venv`；跨环境回环互通需自行确认。
 
-### 6. 启动
+第一跳的命令行参数覆盖 `.env`，例如：
 
 ```bash
+pixi run serve --port 31100 --api-format both --empty-continuations 8 --tool-repair-attempts 3 --tool-request-timeout 900
+```
+
+全部参数可用 `pixi run serve --help` 查看；`HOST` 只控制 relay，不控制第一跳监听地址。
+
+### 3. 检查连接
+
+```bash
+curl -fsS http://127.0.0.1:31100/health
+curl -fsS http://127.0.0.1:31110/health
+curl -fsS http://127.0.0.1:31110/v1/models \
+  -H 'Authorization: Bearer replace-with-relay-key'
+```
+
+健康检查仅说明服务存活。请求须使用模型列表中的真实 `id`（如 `deepseek-pro`、`Kimi-k3`），代理不做别名映射。
+
+## 客户端配置
+
+客户端 Key 填 `RELAY_API_KEY`，支持 Bearer 或 `x-api-key`。
+
+| 协议 | Base URL | 请求路径 |
+| --- | --- | --- |
+| Chat Completions | `http://127.0.0.1:31110/v1` | `/chat/completions` |
+| Messages | `http://127.0.0.1:31110` | `/v1/messages` |
+| Responses | `http://127.0.0.1:31110/v1` | `/responses` |
+
+<details>
+<summary>展开 Claude Code、Codex、omp/Pi 配置与请求示例</summary>
+
+### Claude Code
+
+在启动 Claude Code 的同一终端设置：
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:31110
+export ANTHROPIC_AUTH_TOKEN=replace-with-relay-key
+export ANTHROPIC_MODEL=deepseek-pro
 claude
 ```
 
-### 7. 配置 Codex CLI
+- 若配置了子任务默认模型，也须使用平台实际存在的 ID。
+- 这是第三方协议适配，不代表 Anthropic 官方支持学校模型。[网关配置参考](https://code.claude.com/docs/en/llm-gateway-connect)
 
-Codex CLI 默认走 OpenAI Responses API（`wire_api = "responses"`），编辑 `~/.codex/config.toml`：
+### Codex CLI 与其他 Responses 客户端
+
+在用户级 `~/.codex/config.toml` 中配置：
 
 ```toml
-model = "chatglm"                 # 必须填 GenAI 平台真实的模型 id（aiType），代理不做映射
+model = "deepseek-pro"
 model_provider = "genai"
-disable_response_storage = true   # 代理不提供服务端会话存储
 
 [model_providers.genai]
-name = "ShanghaiTech GenAI"
-base_url = "http://127.0.0.1:31100/v1"   # 注意要带 /v1，Codex 会请求 {base_url}/responses
+name = "ShanghaiTech GenAI relay"
+base_url = "http://127.0.0.1:31110/v1"
 wire_api = "responses"
+env_key = "GENAI_RELAY_API_KEY"
 ```
 
-可选：`model_reasoning_effort` 会映射成 GenAI 的思考开关（`none` 关闭，其余受支持值开启），不代表平台支持不同推理档位。上游返回的思考内容会以 `response.reasoning_summary_text.delta` 事件透传；`model_reasoning_summary` 不改变上游输出。
-
-如果你想改用 Chat Completions 接口，把 `wire_api` 改成 `"chat"` 即可。
-
-## 参数说明
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--token` | JWT 令牌或 `学号@密码`（也可写入 `.env` 的 `GENAI_TOKEN`） | — |
-| `--port` | 服务监听端口（也可写入 `.env` 的 `PORT`） | `31100` |
-| `--api-key` | 客户端认证密钥（也可通过 `API_KEY` 环境变量设置） | 无 |
-| `--api-format` | `openai`、`anthropic` 或 `both`（也可写入 `.env` 的 `API_FORMAT`） | `both` |
-| `--debug` | 启用详细日志输出 | 关闭 |
-
-## 特性
-
-- **Claude Code 兼容** — 提供 Anthropic Messages API，支持 `tool_use/tool_result` 转换与扩展思考（thinking）块，可直接接入 Claude Code
-- **Codex CLI 兼容** — 提供 OpenAI Responses API，支持 `function_call`、`custom_tool_call`（如 apply_patch）与 reasoning summary 事件
-- **OpenAI 兼容** — 同时提供 OpenAI Chat Completion API，支持 Cursor、Continue 等客户端
-- **Tool Calling** — 通过 prompt 注入实现 function calling，兼容不原生支持 function calling 的模型
-- **思维链透传** — 上游 `reasoning_content` 在三个接口里分别以 `reasoning_content`、thinking 块、reasoning 事件输出
-- **自动登录与刷新** — 学号密码模式通过 CAS 自动登录，JWT 过期静默刷新
-- **动态模型列表** — 自动从 GenAI 平台拉取可用模型，`/v1/models` 额外返回图片、文档、搜索、思考开关的 `capabilities`
-- **图片与文档输入** — 三种 API 都支持 URL/base64 图片、内联或 URL 文档；保留历史图片，解析历史文档以延续上下文
-- **联网搜索** — 映射网页的 `netGo`，保留正文来源链接，并追加独立标注的补充检索结果
-- **思考开关** — 支持 `thinking` 布尔值及各客户端的推理参数映射，按上游实际返回透传思考内容
-
-## 图片、文档、联网搜索与深度思考
-
-三种 API 共用附件上传及功能参数处理，流式和非流式均可使用。模型是否返回思考、是否能读取图片仍取决于上游；代理不生成或伪造思考内容。
-
-### 控制参数
-
-| 功能 | Chat Completions | Anthropic Messages | OpenAI Responses |
-|---|---|---|---|
-| 开启思考 | `"thinking": true` 或 `"reasoning_effort": "high"` | `"thinking": {"type": "enabled", "budget_tokens": 1024}`，也支持 `adaptive` | `"reasoning": {"effort": "high"}` |
-| 关闭思考 | `"thinking": false` 或 `"reasoning_effort": "none"` | `"thinking": {"type": "disabled"}` | `"reasoning": {"effort": "none"}` |
-| 开启搜索 | `"web_search": true` 或 `"web_search_options": {}` | `"web_search": true` 或声明 `web_search_20250305` 等搜索工具 | `"web_search": true` 或 `"tools": [{"type": "web_search"}]` |
-
-三个接口均支持扩展字段 `thinking: true/false` 和 `web_search: true/false`。显式布尔值优先于其他映射；未传思考参数时保留上游默认行为。`minimal/low/medium/high/xhigh` 均只映射为开启，不能控制真实思考档位；`budget_tokens` 也不限制平台思考预算，会记日志说明。
-
-搜索工具声明在这里用于启用平台搜索，**不实现 OpenAI/Anthropic 原生托管搜索工具的事件生命周期、工具结果块、地域筛选或搜索次数预算**。`tool_choice: "none"`（Anthropic 的 `{"type":"none"}` 同理）会关闭由工具声明启用的搜索；显式 `web_search: true` 仍然生效。
-
-例如，通过 Chat 同时开启搜索和思考：
+启动前将 `GENAI_RELAY_API_KEY` 设为 relay Key：
 
 ```bash
-curl http://127.0.0.1:31100/v1/chat/completions \
+export GENAI_RELAY_API_KEY=replace-with-relay-key
+codex
+```
+
+客户端须发送完整历史，不使用 `previous_response_id`、`item_reference` 或 `store=true`。要求 custom grammar 或未实现托管工具的版本，需要调整工具声明或配置，不能保证只改地址就能使用。[provider 配置参考](https://developers.openai.com/codex/config-advanced/)
+
+### omp 与 Pi
+
+- omp 使用上表的 Chat 地址。长期测试记录使用 `GenAI` provider 下的 `deepseek-pro`、`Kimi-k3`。
+- Pi 的 `@PDF` 不等于文档上传；附件延迟、超时和显式上传的区别见[Pi 实测](docs/PI_REAL_WORLD_VALIDATION.md)。
+
+### 最小流式请求
+
+```bash
+curl -N http://127.0.0.1:31110/v1/chat/completions \
+  -H 'Authorization: Bearer replace-with-relay-key' \
   -H 'Content-Type: application/json' \
-  -d '{
-    "model": "deepseek-pro",
-    "messages": [{"role": "user", "content": "查找上海科技大学图书馆官网并简要介绍"}],
-    "thinking": true,
-    "web_search": true,
-    "stream": true
-  }'
+  -d '{"model":"deepseek-pro","messages":[{"role":"user","content":"回答 READY"}],"stream":true}'
 ```
 
-### 图片与文档格式
+</details>
 
-| 输入 | Chat Completions 内容块 | Anthropic 内容块 | Responses 内容块 |
-|---|---|---|---|
-| 图片 URL / data URL | `{"type":"image_url","image_url":{"url":"https://… 或 data:image/png;base64,…"}}` | `{"type":"image","source":{"type":"url","url":"https://…"}}`，或 `source.type=base64`、`media_type`、`data` | `{"type":"input_image","image_url":"https://… 或 data:image/png;base64,…"}` |
-| 内联文档 | `{"type":"file","file":{"filename":"note.pdf","file_data":"base64 或 data URL"}}` | `{"type":"document","title":"note.pdf","source":{"type":"base64","media_type":"application/pdf","data":"base64"}}` | `{"type":"input_file","filename":"note.pdf","file_data":"data:application/pdf;base64,…"}` |
-| 文档 URL | `{"type":"file","file":{"file_url":"https://…/note.pdf"}}` | `{"type":"document","source":{"type":"url","url":"https://…/note.pdf"}}` | `{"type":"input_file","file_url":"https://…/note.pdf"}` |
+## 网页模型如何调用工具
 
-Anthropic 还支持文本型文档 `source: {"type":"text","data":"文档正文"}`。只发送附件、没有文字时，代理会补上“请分析所附内容。”作为当前问题。
+网页无原生工具通道时，代理通过“文本约定 + 校验 + 客户端执行”完成调用：
 
-下面的 Python 示例通过 Chat 同时发送本地图片和文档；将文件路径换成自己的文件即可：
+1. **声明**：agent 提交工具名、JSON Schema 与历史，relay 透传给第一跳。
+2. **生成**：第一跳将规则注入网页提示词，模型以普通文本输出封套或工具标记。
+3. **转换**：第一跳严格解析并整批校验，relay 返回标准工具事件；不猜参数，不放行错误批次。
+4. **执行**：本地 agent 按权限执行，携带调用 ID 回传结果，进入下一轮；模型和代理都不代替执行器读写文件。
 
-```python
-import base64
-from pathlib import Path
-import requests
+例如客户端声明 `read_file` 工具时，模型可按对应 Schema 输出：
 
-image = base64.b64encode(Path("picture.png").read_bytes()).decode()
-document = base64.b64encode(Path("note.pdf").read_bytes()).decode()
-response = requests.post(
-    "http://127.0.0.1:31100/v1/chat/completions",
-    json={
-        "model": "chatglm",
-        "thinking": True,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "结合图片与文档回答我的问题"},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image}"}},
-                {"type": "file", "file": {"filename": "note.pdf", "file_data": document}},
-            ],
-        }],
-    },
-    timeout=360,
-)
-response.raise_for_status()
-print(response.json()["choices"][0]["message"])
+```text
+@@ACTION@@{"calls":[{"operation":"read_file","parameters":{"path":"README.md"}}]}@@END_ACTION@@
 ```
 
-如配置了代理 `--api-key`，请求还需添加 `Authorization: Bearer <你的代理密钥>`。
+模型须能遵循约定；输出格式错误将按限额纠错或直接报错。上游若直接返回结构化调用，则优先保留并校验。
 
-图片直接交给上游读取：base64 图片以 data URL、网络图片以原始 URL 放入 `imageUrls`，不需要经过图片服务上传，也不需要 `width` / `height`。历史图片按网页协议保留在各自消息的多模态内容块中，合并文本块放在图片块之前；实测多轮图片追问可在 0.3 秒内正确回答。当前轮文档先上传并通过同一会话的 `fileIds` 引用；历史文档使用平台解析结果恢复为该轮的文本内容。客户端应在每次请求中发送完整历史及附件，不依赖平台网页会话自动续接。
+## 工具、恢复与边界
 
-单张内联图片须小于 20 MiB（base64 会使请求体约为图片的 4/3）；文档须小于 10 MiB，TXT、文本型 PDF 和 DOCX 已完成实际上传解析验证。扫描 PDF、表格及其他格式由平台解析器决定效果。每次请求会重新处理所带附件，暂不提供附件缓存、`/v1/files` 存储或 `file_id` 引用接口。图片与文档由平台侧解析，个别请求可能较慢（实测图片 0.3–1.8 秒，Anthropic 路径有过一次 27.5 秒），代理不会把慢当成失败，仍按 300 秒上游超时处理。
+- 支持整批工具校验；正文与思考可流式返回，工具参数收全且校验通过后才交付。
+- 支持图片、文档、网页搜索与思考开关，格式与限制见[下方说明](#图片文档搜索与思考)。
+- 第一跳默认额外空继续 **8 次**、未交付坏调用纠错 **3 次**，共用 **900 秒**请求窗口；计数不重置，relay native 不叠加重试。
+- 已交付正文/思考、断流、网络错误或截断均不自动重放；限额耗尽返回真实错误。
+- [可选 omp 监督器](docs/USAGE.md#可选的-omp-任务监督)根据独立验收自动反馈续作；预算耗尽即保存状态退出，不自动接管其它客户端。
 
-平台搜索正文与额外来源接口的编号可能不同，因此补充列表会单独标为“补充检索结果（独立于正文引用编号）”，不会伪造 `url_citation` 对应关系。补充检索失败时保留已经返回的正文与链接，并记录 warning。
+> [!IMPORTANT]
+> `native` 仅指两跳间的结构化传输，学校网页仍需文本适配。
+> 本项目不提供 Files API、Responses 服务端状态、custom grammar 或完整供应商思考状态；工具权限与隔离仍由客户端负责。
 
-日志会记录思考开关、搜索开关、附件数量、上传字节数、解析文本长度和准备耗时；不记录附件 base64、文档正文或上传凭据。文本 token 用量仍为估算，不包含准确的视觉计费量。
+## 图片、文档、搜索与思考
 
-### Pi Agent 实际使用
+| 功能 | 输入与处理 | 边界 |
+| --- | --- | --- |
+| 图片 | URL、data URL 或协议图片块；历史图片保留在原轮次 | 内联单张小于 20 MiB；效果与延迟取决于上游 |
+| 文档 | 内联 base64、data URL 或 HTTP(S) URL；当前轮上传与聊天共用会话 | 小于 10 MiB；历史文档用平台解析文本恢复，扫描件效果不保证 |
+| 搜索 | `web_search: true` 或受支持的搜索声明，映射为网页搜索 | 正文来源与补充结果分别标注，不实现厂商托管搜索工具的完整流程 |
+| 思考 | `thinking: true/false`，其他推理参数映射为布尔开关 | 不支持精确 effort 档位或 token budget；只透传独立思考字段 |
 
-Pi 0.85.1 屏蔽用户插件后的真实验证见 [PI_REAL_WORLD_VALIDATION.md](PI_REAL_WORLD_VALIDATION.md)，附有独立模型配置和请求记录。思考开关、联网搜索、原生文本读取已通过；单图一次正确但耗时约 259 秒，另一次 300 秒超时。Pi 的 `@PDF` 会按文本读取，不会自动生成文档上传请求；通过 Pi 原生 `!命令` 显式调用上传脚本后可以完成 PDF 问答。模型自动执行上传命令的尝试未通过，不能把代理支持文档等同于客户端直接支持 PDF 附件。
+<details>
+<summary>展开各协议的开关与 Chat 附件示例</summary>
+
+| 协议 | 关闭思考的写法 |
+| --- | --- |
+| Chat | `"reasoning_effort": "none"` |
+| Messages | `"thinking": {"type":"disabled"}` |
+| Responses | `"reasoning": {"effort":"none"}` |
+
+启用时使用对应的受支持值；三协议也接受扩展字段 `thinking: true/false`。模型可能不返回思考，或把分析写入正文，代理不按语义拆分。
+
+Chat 的 `messages[].content` 可使用以下数组，需将 `...` 替换为真实 base64：
+
+```json
+[
+  {"type":"text","text":"分析所附图片和文档"},
+  {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}},
+  {"type":"file","file":{"filename":"note.pdf","file_data":"data:application/pdf;base64,..."}}
+]
+```
+
+每次请求会重新处理所附文件，客户端应发送完整历史及需要保留的附件。没有 Files API、持久 `file_id` 或跨请求附件缓存。协议证据与历史样本见[网页能力](docs/GENAI_WEB_CAPABILITIES.md)和[功能记录](docs/FEATURE_VALIDATION.md)。
+
+</details>
 
 ## 已知限制
 
-- **令牌过期的恢复仍有缺口**：模型元数据与文档上传阶段遇到失效令牌时，实际观察到 HTTP 500 或流中断，尚未统一恢复与正确传播错误。本轮重启服务恢复了登录状态，详见 Pi 验证报告。
-- **模型名完全透传**：请求里的 `model` 会直接作为 GenAI 平台的 `aiType` 发送，不做任何映射。请填写平台真实存在的模型 id。
-- **无服务端会话状态**：Responses API 不支持 `previous_response_id`，也不做 response storage。客户端需要每轮发送完整历史（Codex 的 `disable_response_storage = true` 正好符合）。
-- **Responses API 是兼容子集**：实现了 Codex / OpenAI Agents SDK 实际使用的 message、function_call、custom_tool_call、reasoning 与文本 delta 事件；web_search 声明会启用 GenAI 网页搜索，但不伪造原生托管工具事件，mcp、image_generation 等托管工具事件未实现。`response.completed` 会回显请求的 `tools` / `tool_choice` / `store` 等字段，但超出上下文上限时发出的是 `response.incomplete`。
-- **Anthropic thinking 签名是占位值**：上游 GenAI 没有 Anthropic 意义上的签名，代理返回 `genai-compat-no-signature`。历史里的 thinking 块会被忽略，不会转发给上游。
-- **图片以内联方式发送**：base64 图片会以 data URL 随请求体一并发送，体积约为原图的 4/3，因此大图会拉长请求体；代理不再调用网页的图片服务，也就不依赖任何前端令牌。只验证过 PNG，其他格式由平台侧解析能力决定。
-- **只有独立 reasoning 字段会被结构化透传**：`reasoning` / `reasoning_content` 会映射到客户端思考字段。上游若把分析写成未标记正文，代理不会猜测其类别。Anthropic 输出路径会过滤正文 `<think>...</think>` 标签；不使用网页历史中的标签内容来伪造实时思考。
-- **思考内容由上游决定，且不保证返回**：deepseek-pro 在 Pi 这类大提示词下（约 2.2 万 token，含 24 个工具 schema）经常完全不发 `reasoning_content`；换成等长的中性提示词则稳定返回。这不是代理丢字段，代理也不会补造。重复同一问题还会命中平台缓存，直接返回旧答案且不带思考。
-- **重复相同问题会命中平台缓存**：同一 `model` 与相同问题重复请求时，平台会在几十毫秒内直接返回上次答案，且不带任何思考增量。想观察思考应以新提问验证；不能据此认为模型不再推理。
-- **部分模型关闭思考后仍把分析写进正文**：GLM 在 `thinking: false` 时，正文会以未标记的英文分析开头（例如 `The user wants me to…`）；同模型开启思考后思考字段与正文均正常。DeepSeek 关闭思考后正文保持干净。这是模型侧行为，代理不猜测哪些句子属于分析，也不事后改写成思考。
-- **工具调用仍由文本模拟**：function calling 依赖 prompt 注入 + 文本解析（`<tool_call>` 标记），模型不按格式输出时可能解析失败，此时工具标记会作为普通文本返回。支持图片输入不等于支持原生 function calling。
-- **`tool_choice` 指定单个函数会收窄允许集合**：Chat 的 `{"type":"function",...}`、Anthropic 的 `{"type":"tool"}` 会让代理只透传该工具的调用，其它工具调用被丢弃；但这只是代理层过滤 + prompt 约束，不是模型原生能力。
-- **输出长度由代理本地强制**：上游不执行 `maxToken`，代理按估算 token 在本地截断，命中上限时 Chat 的 `finish_reason` 与 Anthropic 的 `stop_reason` 会分别返回 `length` / `max_tokens`；未命中时正常返回 `stop` / `end_turn`。预算包含思维链 token，因此对推理模型给很小的 `max_tokens` 时可能只产出思维链、正文为空。
-- **usage 是本地估算**：`prompt_tokens` / `input_tokens` / `completion_tokens` 均由代理按文本估算，不是上游真实计费值。
-- **思考支持开关，不支持档位或精确预算**：客户端推理参数映射为上游 `thinking` 布尔值。模型标为不提供开关、额度不足或上游未返回思考字段时，代理不会补造思考内容。`/v1/models` 的 `capabilities` 来自平台配置，不代表已逐模型保证所有组合都可用。
-- **上游超时与错误传播**：上游单次请求超时为 300 秒；大 prompt（数十万 token）首 token 仍可能超时，此时流式接口返回标准 `error` 事件（HTTP 仍为 200），非流式接口返回 HTTP 502 与 `{"error": {...}}`。上游即使用 HTTP 200 + SSE 返回纯文本错误（如 worker 不可用时的 `No available workers (all circuits open or unhealthy)`），也会按同样方式上报，不再表现为空回复。
-- **兼容 GenAI 原生 DSML 标记**：部分模型会自行输出 `<｜DSML｜tool_call>`、`<｜DSML｜call>`、`<｜DSML｜_call>`、`<｜DSML｜ name="Tool">` 等 DSML 变体，代理会统一归一化为 `<tool_call>` 再解析；标签内的参数同时兼容 JSON 与 Python 字面量（单引号、`True`/`None`）。模型输出严重残缺时仍可能解析失败。
+- 学校平台决定模型供应、配额、延迟和空输出；元数据与附件处理阶段的过期认证恢复仍有缺口。
+- 不支持 Responses 服务端状态、custom grammar、未实现的托管工具或 Files API；客户端需发送完整历史。
+- 不恢复厂商加密思考状态；Messages 的 `genai-compat-no-signature` 是兼容占位，不是真实 Anthropic 签名。
+- `max_tokens` 和 `usage` 为本地估算，包含思考。直连第一跳的普通文本截断有对应终态，经过 relay 时截断会报错。
+- 取消或到期会关闭已取得的响应和 socket；等待上游响应头的阻塞请求不能立即打断，也不保证远端推理同步停止。
+- Schema 合法不保证操作安全或代码正确。客户端负责授权和隔离；未启用监督器时，恢复耗尽后任务仍可能停止。
 
-## 上下文探测工具
+## 与重构前的区别
 
-GenAI 平台上不同模型的上下文窗口不一样（128k ~ 1M 都有）。`context-probe` 工具用于**实测**某个模型的真实上下文长度，供 Claude Code 等前端安全地控制 prompt 大小。
+原版两跳已有三协议与附件，原 relay 已有 Schema 校验。主要变化：
 
-原理是在输入**最前端**放一个唯一标记（`ZEBRA`），再让模型复述它；能复述说明整个上下文都被保留，后端拒绝时其报错信息通常会给出精确上限（如 `maximum context length is 524288 tokens`）。
+| 项目 | 重构前 | 当前 |
+| --- | --- | --- |
+| 两跳传输 | 第二跳将工具与历史写成文本，等待完整回复 | 保留工具结构，逐段接收第一跳的回复 |
+| SSE | 第一跳已有流式；第二跳等待完整文本 | 优先发送起始事件，正文/思考增量返回 |
+| 校验 | 第一跳存在宽松解析与参数修补 | 严格解析并整批校验，不猜参数 |
+| 恢复 | 文本重试主要在第二跳 | 单次请求由第一跳恢复，任务验收由可选监督器负责 |
 
-```bash
-# 定量探测指定模型（在列出的尺寸上打点）
-pixi run context-probe --model chatglm --tokens 8192,131072,524288
+冻结版本、兼容代价与源码依据见[架构对照](docs/STAGE_NATIVE_FIRST.md#5-与双跳原仓库及本地重构前分支的对照)。
 
-# 自动二分找出模型的上限（推荐）
-pixi run context-probe --model GPT-5.6-SOL --find
+## 模型实测
 
-# 快速扫描所有对话模型（较慢，谨慎使用）
-pixi run context-probe --all
-```
+2026-10-25，真实 omp 经双跳完成同一套 Python/CSV/SQLite 任务，均无人工纠错：
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--model` | 要探测的模型 id（与 `--all` 二选一） | — |
-| `--all` | 扫描所有对话模型 | — |
-| `--tokens` | 逗号分隔的目标 token 尺寸列表 | 一组基准值 |
-| `--find` | 二分找出精确上下文上限 | 关闭 |
-| `--low` / `--high` | `--find` 的搜索区间 | `8192` / `2097152` |
-| `--max-output` | 每次探测的最大输出 token | `300` |
-| `--timeout` | 单次请求超时（秒） | `300` |
-| `--token` | JWT 或 `学号@密码`（覆盖 `.env` 的 `GENAI_TOKEN`） | — |
+| 测试项 | deepseek-pro | Kimi-k3 |
+| --- | ---: | ---: |
+| 执行总耗时 | 595.000 秒 | 1825.531 秒 |
+| 阶段完成率 | 20/20 | 20/20 |
+| 工具调用总数 | 150 | 110 |
+| 第一跳空输出续作 / 工具纠错次数 | 8 / 4 | 0 / 0 |
+| 监督器介入反馈轮次 | 0 | 4 |
+| 人工交互调整次数 | 0 | 0 |
+| 独立自动化验收项通过数 | 71 项通过 | 71 项通过 |
 
-> 注意：`--find` 和较大的 `--tokens` 会向平台发送很大的请求体并消耗真实 token 额度；az 系列模型可能触发平台配额限制（报 `额度上限了`）。
+- DeepSeek 在第一跳恢复空完成与坏调用；Kimi 经自动反馈恢复协议错误及只给计划的停滞。
+- 这是已有样本，非官方 API 对照或稳定性保证。[完整记录](docs/TEST_REPORT_deepseek_pro.md)
 
-## 速度基准工具
+## 更多文档
 
-`bench-speed` 工具通过本地代理（默认 `http://127.0.0.1:31100`）逐一向每个对话模型发流式请求，测量两个指标：
+[任务监督用法](docs/USAGE.md) · [架构](docs/STAGE_NATIVE_FIRST.md) · [工具参数](docs/TOOLS.md) · [文档索引](docs/README.md) · [变更记录](CHANGELOG.md)
 
-- **首字时间（TTFT）**：从发出请求到收到第一个内容或思维链增量。
-- **正文首字时间**：从发出请求到收到第一个正文（非思维链）增量。
-- **输出速度**：输出 token 数 ÷（总耗时 − 首字时间），即首字后的解码速度。
+测试命令：`pixi run test`。本次文档修订未重跑上述长期验收，记录不等于所有任务的稳定性保证。
 
-模型顺序执行以避免并发干扰，每个模型先预热再取多次中位数；输出 token 优先取流末尾 `usage.completion_tokens`。
-
-```bash
-# 扫描 /v1/models 里的全部对话模型
-pixi run bench-speed
-
-# 只测指定模型，次数与输出上限可调
-pixi run bench-speed --models deepseek-chat,deepseek-pro --runs 5 --max-tokens 2048
-
-# 把 Markdown 报告写入文件
-pixi run bench-speed --output BENCH_speed.md
-```
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--base-url` | 代理地址 | `http://127.0.0.1:31100` |
-| `--api-key` | 代理 API key（或设置 `API_KEY` 环境变量） | — |
-| `--models` | 逗号分隔的模型 id，默认取 `/v1/models` 全部对话模型 | — |
-| `--runs` | 每个模型正式测量次数 | `3` |
-| `--warmup` | 每个模型预热次数（不计入结果） | `1` |
-| `--max-tokens` | 单次请求输出上限 | `512` |
-| `--timeout` | 单次请求超时（秒） | `300` |
-| `--prompt` | 测试用的用户消息 | 计数到 200 |
-| `--output` | 把 Markdown 报告写入该文件 | — |
-
-> 注意：被平台标记为不可用的模型（额度上限、`No available workers`）会在报告里记为失败，这不代表速度，而是上游状态。
-
-## 致谢
-
-本项目基于 [HeZeBang/GenAI2OpenAI](https://github.com/HeZeBang/GenAI2OpenAI) 开发，感谢原作者的工作。
-
-## 许可
-
-MIT License — 详见 LICENSE 文件。
+基于 [jollyxenon/shanghaitech-genai2api](https://github.com/jollyxenon/shanghaitech-genai2api) 与 [HeZeBang/GenAI2OpenAI](https://github.com/HeZeBang/GenAI2OpenAI)，relay 基于 [negativegluon/genai2agent-relay](https://github.com/negativegluon/genai2agent-relay)。[MIT License](LICENSE)。

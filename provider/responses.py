@@ -1,15 +1,45 @@
 import json
-import logging
 import time
 import uuid
 from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from provider.anthropic import parse_tool_arguments
-from provider.genai import estimate_text_tokens, iter_genai_stream, split_history_messages
-from tools.parsing import extract_tool_calls, find_tool_call_open, tool_call_prefix_len
-from tools.prompts import flatten_message_content, inject_tool_prompt, normalize_content, merge_content
+from provider.genai import estimate_text_tokens, iter_genai_stream
+from provider.features import is_web_search_tool
+from tools.parsing import ACTION_CLOSE_MARKER, ACTION_OPEN_MARKER
+from tools.prompts import escape_tool_control_markers, flatten_message_content, normalize_content, merge_content
 
-logger = logging.getLogger(__name__)
+
+def _qualified_name(name, namespace=None):
+    if not isinstance(name, str) or not name:
+        raise ValueError("Tool name must be a non-empty string")
+    if namespace is None:
+        return name
+    if not isinstance(namespace, str) or not namespace:
+        raise ValueError("Tool namespace must be a non-empty string")
+    return f"{namespace}.{name}"
+
+
+def _tool_entries(tools, namespace=None):
+    """保留命名空间身份，内部使用 namespace.leaf，输出恢复独立字段。"""
+    if tools is not None and not isinstance(tools, list):
+        raise ValueError("tools must be an array")
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            raise ValueError("Each tool must be an object")
+        kind = tool.get("type")
+        if kind == "namespace":
+            if not isinstance(tool.get("tools"), list):
+                raise ValueError("Namespace tools must be an array")
+            yield from _tool_entries(tool["tools"], _qualified_name(tool.get("name"), namespace))
+        elif kind in ("function", "custom"):
+            _qualified_name(tool.get("name"), namespace)
+            identity = {"name": tool["name"]}
+            if namespace is not None:
+                identity["namespace"] = namespace
+            yield tool, identity
+        elif not is_web_search_tool(tool):
+            raise ValueError(f"Unsupported Responses tool type: {kind}")
 
 
 def responses_tools_to_chat_tools(tools: Any) -> Tuple[List[Dict[str, Any]], Set[str]]:
@@ -21,27 +51,23 @@ def responses_tools_to_chat_tools(tools: Any) -> Tuple[List[Dict[str, Any]], Set
     chat_tools: List[Dict[str, Any]] = []
     custom_tool_names: Set[str] = set()
 
-    def add_function(tool: Dict[str, Any]) -> None:
-        name = tool.get("name")
-        if not name:
-            return
+    def add_function(tool: Dict[str, Any], name: str) -> None:
         chat_tools.append({
             "type": "function",
             "function": {
                 "name": name,
                 "description": tool.get("description", ""),
-                "parameters": tool.get("parameters") or {"type": "object", "properties": {}},
+                "parameters": tool.get("parameters", {"type": "object", "properties": {}, "additionalProperties": False}),
             },
         })
 
-    def add_custom(tool: Dict[str, Any]) -> None:
-        name = tool.get("name")
-        if not name:
-            return
+    def add_custom(tool: Dict[str, Any], name: str) -> None:
+        custom_format = tool.get("format")
+        if custom_format is not None and (
+            not isinstance(custom_format, dict) or custom_format.get("type", "text") != "text"
+        ):
+            raise ValueError("Custom tool grammar formats are not supported; use text format")
         description = tool.get("description", "")
-        definition = (tool.get("format") or {}).get("definition")
-        if definition:
-            description = f"{description}\n\n自由文本格式定义：\n{definition}"
         chat_tools.append({
             "type": "function",
             "function": {
@@ -56,27 +82,18 @@ def responses_tools_to_chat_tools(tools: Any) -> Tuple[List[Dict[str, Any]], Set
                         }
                     },
                     "required": ["input"],
+                    "additionalProperties": False,
                 },
             },
         })
         custom_tool_names.add(name)
 
-    for tool in tools or []:
-        if not isinstance(tool, dict):
-            continue
-        tool_type = tool.get("type")
-        if tool_type == "function":
-            add_function(tool)
-        elif tool_type == "custom":
-            add_custom(tool)
-        elif tool_type == "namespace":
-            for inner in tool.get("tools") or []:
-                if not isinstance(inner, dict):
-                    continue
-                if inner.get("type") == "custom":
-                    add_custom(inner)
-                elif inner.get("type") == "function":
-                    add_function(inner)
+    for tool, identity in _tool_entries(tools):
+        name = _qualified_name(identity["name"], identity.get("namespace"))
+        if tool["type"] == "function":
+            add_function(tool, name)
+        else:
+            add_custom(tool, name)
 
     return chat_tools, custom_tool_names
 
@@ -85,18 +102,12 @@ def responses_tool_choice_to_chat(tool_choice: Any) -> Any:
     """把 Responses 的 tool_choice 映射成 inject_tool_prompt 认识的形态。"""
     if tool_choice is None:
         return None
-    if isinstance(tool_choice, str):
-        if tool_choice == "none":
-            return "none"
-        if tool_choice == "required":
-            return "required"
-        return None
+    if isinstance(tool_choice, str) and tool_choice in ("none", "required", "auto"):
+        return tool_choice
     if isinstance(tool_choice, dict):
-        if tool_choice.get("type") == "function" and tool_choice.get("name"):
-            return {"type": "function", "function": {"name": tool_choice["name"]}}
-        if tool_choice.get("type") == "allowed_tools" and tool_choice.get("mode") == "required":
-            return "required"
-    return None
+        if tool_choice.get("type") in ("function", "custom") and tool_choice.get("name"):
+            return {"type": "function", "function": {"name": _qualified_name(tool_choice["name"], tool_choice.get("namespace"))}}
+    raise ValueError("Unsupported Responses tool_choice")
 
 
 def _merge_adjacent_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -134,6 +145,9 @@ def responses_input_to_genai_messages(input_value: Any, instructions: Any = None
             continue
 
         item_type = item.get("type") or "message"
+        if item_type in ("function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"):
+            if not isinstance(item.get("call_id"), str) or not item["call_id"]:
+                raise ValueError("Tool history requires an explicit call_id")
         if item_type == "message":
             role = item.get("role", "user")
             if role == "developer":
@@ -142,28 +156,32 @@ def responses_input_to_genai_messages(input_value: Any, instructions: Any = None
                 role = "user"
             messages.append({"role": role, "content": normalize_content(item.get("content"))})
         elif item_type == "function_call":
-            call_obj = {
-                "name": item.get("name", ""),
-                "arguments": parse_tool_arguments(item.get("arguments", {})),
-            }
+            call_obj = {"calls": [{
+                "id": item["call_id"],
+                "operation": _qualified_name(item.get("name"), item.get("namespace")),
+                "parameters": parse_tool_arguments(item.get("arguments", {})),
+            }]}
+            call_json = escape_tool_control_markers(json.dumps(call_obj, ensure_ascii=False))
             messages.append({
                 "role": "assistant",
-                "content": f"<tool_call>\n{json.dumps(call_obj, ensure_ascii=False)}\n</tool_call>",
+                "content": f"{ACTION_OPEN_MARKER}{call_json}{ACTION_CLOSE_MARKER}",
             })
         elif item_type in ("custom_tool_call",):
-            call_obj = {
-                "name": item.get("name", ""),
-                "arguments": {"input": item.get("input", "")},
-            }
+            call_obj = {"calls": [{
+                "id": item["call_id"],
+                "operation": _qualified_name(item.get("name"), item.get("namespace")),
+                "parameters": {"input": item.get("input", "")},
+            }]}
+            call_json = escape_tool_control_markers(json.dumps(call_obj, ensure_ascii=False))
             messages.append({
                 "role": "assistant",
-                "content": f"<tool_call>\n{json.dumps(call_obj, ensure_ascii=False)}\n</tool_call>",
+                "content": f"{ACTION_OPEN_MARKER}{call_json}{ACTION_CLOSE_MARKER}",
             })
         elif item_type in ("function_call_output", "custom_tool_call_output"):
             output_parts = normalize_content(item.get("output"))
             output = flatten_message_content(output_parts)
             attachments = [part for part in output_parts if part["type"] != "text"] if isinstance(output_parts, list) else []
-            call_id = item.get("call_id", "")
+            call_id = item["call_id"]
             text = (
                 "<tool_result>\n"
                 f"  <tool_call_id>{call_id}</tool_call_id>\n"
@@ -174,11 +192,10 @@ def responses_input_to_genai_messages(input_value: Any, instructions: Any = None
                 "role": "user",
                 "content": merge_content(text, attachments) if attachments else text,
             })
-        elif item_type in ("reasoning", "item_reference"):
-            # 历史思维链与引用不重新喂给上游模型
+        elif item_type == "reasoning":
             continue
         else:
-            logger.debug("Ignoring unsupported Responses input item type: %s", item_type)
+            raise ValueError(f"Unsupported Responses input item type: {item_type}")
 
     text = flatten_message_content(instructions)
     if text.strip():
@@ -189,16 +206,7 @@ def responses_input_to_genai_messages(input_value: Any, instructions: Any = None
 
 def _custom_tool_input(arguments: Any) -> str:
     """custom 工具的自由文本输入。"""
-    parsed = parse_tool_arguments(arguments)
-    if isinstance(parsed, dict):
-        value = parsed.get("input")
-        if isinstance(value, str):
-            return value
-        if value is not None:
-            return json.dumps(value, ensure_ascii=False)
-    if isinstance(arguments, str):
-        return arguments
-    return json.dumps(parsed, ensure_ascii=False)
+    return parse_tool_arguments(arguments)["input"]
 
 
 def _split_chat_info(messages: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
@@ -258,13 +266,19 @@ def stream_genai_as_responses(
     config: Any,
     instructions: Any = None,
     custom_tool_names: Optional[Set[str]] = None,
-    allowed_tool_names: Optional[Set[str]] = None,
+    tools=None,
     max_output_tokens: Optional[int] = None,
     response_meta: Optional[Dict[str, Any]] = None,
     upstream_options: Optional[Dict[str, Any]] = None,
+    tool_choice=None,
+    parallel_tool_calls=True,
 ) -> Generator[str, None, None]:
     """把 GenAI 流转换成 OpenAI Responses API 的 SSE 事件。"""
     custom_tool_names = custom_tool_names or set()
+    output_names = {
+        _qualified_name(identity["name"], identity.get("namespace")): identity
+        for _, identity in _tool_entries((response_meta or {}).get("tools"))
+    }
     response_id = f"resp_{uuid.uuid4().hex[:24]}"
     created_at = int(time.time())
     sequence_number = 0
@@ -297,11 +311,7 @@ def stream_genai_as_responses(
     message_item_id: Optional[str] = None
     message_index: Optional[int] = None
     message_parts: List[str] = []
-    message_closed = False
 
-    buffer = ""
-    tool_buffer = ""
-    tool_detected = False
 
     def start_reasoning():
         nonlocal reasoning_item_id, reasoning_index, next_output_index
@@ -387,14 +397,13 @@ def stream_genai_as_responses(
         })
 
     def finish_message():
-        nonlocal message_item_id, message_closed
+        nonlocal message_item_id
         if message_item_id is None:
             return
         text = "".join(message_parts)
         item_id = message_item_id
         index = message_index
         message_item_id = None
-        message_closed = True
         yield ev("response.output_text.done", {
             "item_id": item_id,
             "output_index": index,
@@ -421,10 +430,11 @@ def stream_genai_as_responses(
     def emit_tool_calls(tool_calls: List[Dict[str, Any]]):
         nonlocal next_output_index
         for tool_call in tool_calls:
-            function = tool_call.get("function", {})
-            name = function.get("name") or "tool"
-            arguments = function.get("arguments", "{}")
-            call_id = tool_call.get("id") or f"call_{uuid.uuid4().hex[:24]}"
+            function = tool_call["function"]
+            name = function["name"]
+            identity = output_names.get(name, {"name": name})
+            arguments = function["arguments"]
+            call_id = tool_call["id"]
 
             if name in custom_tool_names:
                 item_id = f"ctc_{uuid.uuid4().hex[:24]}"
@@ -437,7 +447,7 @@ def stream_genai_as_responses(
                         "id": item_id,
                         "type": "custom_tool_call",
                         "call_id": call_id,
-                        "name": name,
+                        **identity,
                         "input": "",
                     },
                 })
@@ -455,7 +465,7 @@ def stream_genai_as_responses(
                     "id": item_id,
                     "type": "custom_tool_call",
                     "call_id": call_id,
-                    "name": name,
+                    **identity,
                     "input": input_text,
                     "status": "completed",
                 }
@@ -472,7 +482,7 @@ def stream_genai_as_responses(
                         "type": "function_call",
                         "status": "in_progress",
                         "call_id": call_id,
-                        "name": name,
+                        **identity,
                         "arguments": "",
                     },
                 })
@@ -491,137 +501,67 @@ def stream_genai_as_responses(
                     "type": "function_call",
                     "status": "completed",
                     "call_id": call_id,
-                    "name": name,
+                    **identity,
                     "arguments": arguments,
                 }
                 yield ev("response.output_item.done", {"output_index": index, "item": item})
                 output_items.append(item)
 
-    for event in iter_genai_stream(chat_info, history_messages, model, max_tokens, config, upstream_options=upstream_options):
-        if event["type"] == "error":
-            yield ev("error", {"code": None, "message": event["message"], "param": None})
-            return
-
-        if event["type"] == "delta":
-            reasoning = event.get("reasoning")
-            # reasoning 必须排在最前面，正文开始后无法再插入
-            if reasoning and not (message_item_id or message_closed or tool_detected):
-                if reasoning_item_id is None:
-                    yield from start_reasoning()
-                reasoning_parts.append(reasoning)
-                yield ev("response.reasoning_summary_text.delta", {
-                    "item_id": reasoning_item_id,
-                    "output_index": reasoning_index,
-                    "summary_index": 0,
-                    "delta": reasoning,
-                })
-
-            content = event.get("content")
-            if not content:
+    events = iter_genai_stream(chat_info, history_messages, model, max_tokens, config,
+                               upstream_options=upstream_options, recover_empty=bool(tools),
+                               tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls)
+    try:
+        for event in events:
+            if event["type"] == "heartbeat":
+                yield ": keep-alive\n\n"
                 continue
-
-            if reasoning_item_id is not None:
-                yield from finish_reasoning()
-
-            if tool_detected:
-                tool_buffer += content
-                continue
-
-            buffer += content
-            tag_pos = find_tool_call_open(buffer)
-            if tag_pos >= 0:
-                pre = buffer[:tag_pos]
-                if pre:
+            if event["type"] == "error":
+                yield ev("error", {"code": event.get("code", "upstream_error"), "message": event["message"], "param": None})
+                return
+            if event["type"] == "delta":
+                reasoning = event.get("reasoning")
+                if reasoning:
+                    if reasoning_item_id is None:
+                        yield from start_reasoning()
+                    reasoning_parts.append(reasoning)
+                    yield ev("response.reasoning_summary_text.delta", {
+                        "item_id": reasoning_item_id, "output_index": reasoning_index,
+                        "summary_index": 0, "delta": reasoning,
+                    })
+                content = event.get("content")
+                if content:
                     if message_item_id is None:
                         yield from start_message()
-                    message_parts.append(pre)
-                    yield from message_delta(pre)
-                tool_detected = True
-                tool_buffer = buffer[tag_pos:]
-                buffer = ""
+                    message_parts.append(content)
+                    yield from message_delta(content)
                 continue
-
-            prefix_len = tool_call_prefix_len(buffer)
-            if prefix_len > 0:
-                safe = buffer[:-prefix_len]
-                if safe:
-                    if message_item_id is None:
-                        yield from start_message()
-                    message_parts.append(safe)
-                    yield from message_delta(safe)
-                buffer = buffer[-prefix_len:]
-            else:
-                if buffer:
-                    if message_item_id is None:
-                        yield from start_message()
-                    message_parts.append(buffer)
-                    yield from message_delta(buffer)
-                buffer = ""
-            continue
-
-        # done
-        yield from finish_reasoning()
-
-        if tool_detected:
-            tool_buffer += buffer
-            buffer = ""
-            tool_calls, remaining = extract_tool_calls(
-                tool_buffer, allowed_tool_names=allowed_tool_names
+            if event["type"] != "done":
+                continue
+            yield from finish_reasoning()
+            yield from finish_message()
+            yield from emit_tool_calls(event["tool_calls"])
+            output_tokens = estimate_text_tokens("".join(message_parts)) + estimate_text_tokens("".join(reasoning_parts))
+            input_tokens = estimate_text_tokens(chat_info) + sum(
+                estimate_text_tokens(flatten_message_content(message.get("content", ""))) for message in history_messages
             )
-            if tool_calls:
-                if remaining:
-                    if message_item_id is None:
-                        yield from start_message()
-                    message_parts.append(remaining)
-                    yield from message_delta(remaining)
+            output_items.sort(key=lambda item: (
+                reasoning_index if item["type"] == "reasoning"
+                else message_index if item["type"] == "message" else next_output_index
+            ))
+            truncated = event.get("finish_reason") == "length"
+            response_object = base("incomplete" if truncated else "completed", output_items)
+            response_object["usage"] = {
+                "input_tokens": input_tokens,
+                "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+                "output_tokens": output_tokens,
+                "output_tokens_details": {"reasoning_tokens": estimate_text_tokens("".join(reasoning_parts))},
+                "total_tokens": input_tokens + output_tokens,
+            }
+            if truncated:
+                response_object["incomplete_details"] = {"reason": "max_output_tokens"}
+                yield ev("response.incomplete", {"response": response_object})
             else:
-                logger.warning("Tool tag detected but parsing failed; emitting as text")
-                emit_target = remaining if remaining is not None else tool_buffer
-                if emit_target:
-                    if message_item_id is None:
-                        yield from start_message()
-                    message_parts.append(emit_target)
-                    yield from message_delta(emit_target)
-                tool_calls = []
-
-            yield from finish_message()
-            if tool_calls:
-                yield from emit_tool_calls(tool_calls)
-        else:
-            if buffer:
-                if message_item_id is None:
-                    yield from start_message()
-                message_parts.append(buffer)
-                yield from message_delta(buffer)
-            yield from finish_message()
-
-        output_text = "".join(message_parts)
-        reasoning_text = "".join(reasoning_parts)
-        output_tokens = estimate_text_tokens(output_text) + estimate_text_tokens(reasoning_text)
-        input_tokens = estimate_text_tokens(chat_info) + sum(
-            estimate_text_tokens(flatten_message_content(message.get("content", ""))) for message in history_messages
-        )
-
-        truncated = event.get("finish_reason") == "length"
-        response_object = base("incomplete" if truncated else "completed", output_items)
-        response_object["usage"] = {
-            "input_tokens": input_tokens,
-            "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
-            "output_tokens": output_tokens,
-            "output_tokens_details": {"reasoning_tokens": estimate_text_tokens(reasoning_text)},
-            "total_tokens": input_tokens + output_tokens,
-        }
-        if truncated:
-            response_object["incomplete_details"] = {"reason": "max_output_tokens"}
-            yield ev("response.incomplete", {"response": response_object})
-        else:
-            yield ev("response.completed", {"response": response_object})
-
-        logger.info(
-            "responses stream model=%s items=%d output_tokens=%d truncated=%s",
-            model,
-            len(output_items),
-            output_tokens,
-            truncated,
-        )
-        return
+                yield ev("response.completed", {"response": response_object})
+            return
+    finally:
+        events.close()

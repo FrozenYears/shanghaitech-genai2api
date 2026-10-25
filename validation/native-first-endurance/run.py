@@ -4,14 +4,13 @@ import ast
 from copy import deepcopy
 import hashlib
 import json
-import os
 from pathlib import Path
 import sqlite3
-import subprocess
 import tempfile
 import time
 
 from omp_client import OmpClient
+from supervisor import feedback_budget, metrics, positive, run_checker, supervise
 from workload import BASE, STAGES, STARTER, cases
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,16 +26,17 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def verify(workspace, stage, output=None):
+def verify(workspace, stage, output=None, deadline=None):
     """逐请求运行实际业务代码；期望只由验收进程持有。"""
     failures = []
     assertions = 0
     sandbox = Path(tempfile.mkdtemp(prefix='db-', dir=workspace.parent))
-    child_env = {k: v for k, v in os.environ.items() if not any(word in k.upper() for word in ('TOKEN', 'API_KEY', 'PASSWORD', 'SECRET'))}
-    child_env['PYTHONDONTWRITEBYTECODE'] = '1'
     for group in cases(stage):
         db = sandbox / (group['name'].replace('/', '_') + '.sqlite')
         for step, (request, expected) in enumerate(group['steps']):
+            if deadline is not None and time.monotonic() >= deadline:
+                failures.append({'case': group['name'], 'error': 'verification wall_time_limit'})
+                break
             request = deepcopy(request)
             if request.pop('_legacy', False):
                 with sqlite3.connect(db) as connection:
@@ -44,11 +44,22 @@ def verify(workspace, stage, output=None):
                     connection.execute('INSERT INTO transactions VALUES (?,?,?,?,?,?)', ('legacy', '2024-01-02', 'cash', '1.015', 'CNY', 'food'))
             request['db'] = str(db)
             try:
-                proc = subprocess.run([str(PYTHON), '-B', '-m', 'ledgerlab'], input=json.dumps(request, ensure_ascii=False), cwd=workspace, env=child_env, text=True, encoding='utf-8', errors='replace', capture_output=True, timeout=8)
-                actual = json.loads(proc.stdout)
+                proc = run_checker([str(PYTHON), '-B', '-m', 'ledgerlab'], workspace,
+                                   input_text=json.dumps(request, ensure_ascii=False), output_limit=1048576,
+                                   timeout=min(8, max(.01, deadline - time.monotonic())) if deadline is not None else 8)
+                if proc.get('fatal'):
+                    failures.append({'case': group['name'], 'step': step, 'error': proc['checker_error']})
+                    break
+                try:
+                    actual = json.loads(proc['stdout'])
+                except json.JSONDecodeError:
+                    failures.append({'case': group['name'], 'step': step, 'error': 'Invalid checker JSON output',
+                                     'exit': proc['exit'], 'timed_out': proc['timed_out'],
+                                     'stdout': proc['stdout'][-700:], 'stderr': proc['stderr'][-700:]})
+                    break
                 assertions += 1
-                if proc.returncode != 0 or actual != expected:
-                    failures.append({'case': group['name'], 'step': step, 'request': request, 'expected': expected, 'actual': actual, 'exit': proc.returncode, 'stderr': proc.stderr[-700:]})
+                if not proc['passed'] or actual != expected:
+                    failures.append({'case': group['name'], 'step': step, 'request': request, 'expected': expected, 'actual': actual, 'exit': proc['exit'], 'stderr': proc['stderr'][-700:]})
             except Exception as exc:
                 failures.append({'case': group['name'], 'step': step, 'error': type(exc).__name__ + ': ' + str(exc)})
                 break
@@ -75,33 +86,6 @@ def verify(workspace, stage, output=None):
     return result
 
 
-def metrics(result):
-    events = result.pop('events')
-    tools = []
-    failures = []
-    usage = []
-    texts = []
-    for event in events:
-        kind = event.get('type')
-        if kind == 'tool_execution_start':
-            tools.append({'name': event.get('toolName'), 'id': event.get('toolCallId'), 'input_sha256': hashlib.sha256(json.dumps(event.get('args'), ensure_ascii=False, sort_keys=True).encode()).hexdigest()})
-        elif kind == 'tool_execution_end' and event.get('isError'):
-            failures.append({'name': event.get('toolName'), 'id': event.get('toolCallId'), 'result': event.get('result')})
-        elif kind == 'message_end':
-            message = event.get('message', {})
-            if message.get('role') == 'assistant':
-                if message.get('usage'):
-                    usage.append(message['usage'])
-                for block in message.get('content') or []:
-                    if block.get('type') == 'text':
-                        texts.append(block.get('text', ''))
-    seen = set()
-    repeated = 0
-    for tool in tools:
-        signature = (tool['name'], tool['input_sha256'])
-        repeated += signature in seen
-        seen.add(signature)
-    return {**result, 'tools': tools, 'tool_errors': failures, 'model_requests': len(usage), 'usage': usage, 'repeated_tool_inputs': repeated, 'last_text': '\n'.join(texts)[-1600:]}
 
 
 def artifacts(model):
@@ -159,33 +143,26 @@ def run(args):
             prompt += f'阶段 {index}: {name}\n{task}\n只在当前工作目录修改，保持fixed_fixture.txt字节不变。先用glob/grep/read确认已有实现，再修改。唯一获准bash命令如下，必须真实运行并据结果修复，成功后结束：\n' + command
             record = {'stage': index, 'name': name, 'attempts': []}
             summary['stages'].append(record)
-            for attempt in range(args.repairs + 1):
-                attempt_dir = stage_dir / f'attempt-{attempt}'
-                attempt_dir.mkdir()
-                (attempt_dir / 'prompt.txt').write_text(prompt, encoding='utf-8')
-                remaining = args.max_minutes * 60 - (time.monotonic() - started)
-                if remaining <= 0:
-                    summary['stop_reason'] = 'wall_time_limit'
-                    break
-                response = metrics(client.prompt(prompt, timeout=min(args.stage_timeout, remaining)))
-                check = verify(workspace, index, attempt_dir / 'verification.json')
-                record['attempts'].append({'client': response, 'verification': check})
+            def progress(state):
+                record.update(state)
                 (run_dir / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
-                emit({'model': args.model, 'stage': index, 'attempt': attempt, 'passed': check['passed'], 'assertions': check['assertions'], 'tools': len(response['tools']), 'tool_errors': len(response['tool_errors']), 'model_requests': response['model_requests'], 'elapsed_s': response['elapsed_s']})
-                if check['passed'] and response['completion'].get('status') == 'completed':
-                    record['passed'] = True
-                    break
-                # 不是请求级自动重试：记录失败后，提交一条明确的新用户反馈，
-                # 让 agent 检查已执行状态再继续；不能假定先前工具未运行。
-                prompt = (
-                    '本阶段尚未验收通过。上一轮结束状态为 '
-                    + json.dumps(response['completion'], ensure_ascii=False)
-                    + '。已有工具可能实际执行，先读取磁盘确认状态，不要盲目重复写入。'
-                    + '保持全部旧接口，修复以下独立验收失败，重新运行前述验收命令并正常结束：\n'
-                    + json.dumps(check, ensure_ascii=False)
-                )
+                if state['attempts']:
+                    latest = state['attempts'][-1]
+                    response, check = latest['client'], latest['verification']
+                    emit({'model': args.model, 'stage': index, 'attempt': len(state['attempts']) - 1,
+                          'passed': state['passed'], 'assertions': check.get('assertions', 0),
+                          'tools': len(response['tools']), 'tool_errors': len(response['tool_errors']),
+                          'model_requests': response['model_requests'], 'elapsed_s': response.get('elapsed_s'),
+                          'automatic_feedback_count': state['automatic_feedback_count'],
+                          'stagnation_count': state['stagnation_count'], 'stop_reason': state['stop_reason']})
+            state = supervise(client, prompt,
+                              lambda seconds: verify(workspace, index, deadline=time.monotonic() + seconds),
+                              artifact_dir=stage_dir, max_feedback=args.max_feedback,
+                              deadline=started + args.max_minutes * 60, turn_timeout=args.stage_timeout,
+                              on_progress=progress)
+            record.update(state)
             if not record.get('passed'):
-                summary.setdefault('stop_reason', 'stage_failed_after_repairs')
+                summary['stop_reason'] = record['stop_reason']
                 break
         else:
             summary['completed'] = True
@@ -203,6 +180,13 @@ def run(args):
         summary['tool_errors'] = sum(len(a['client']['tool_errors']) for s in summary['stages'] for a in s['attempts'])
         summary['model_requests'] = sum(a['client']['model_requests'] for s in summary['stages'] for a in s['attempts'])
         summary['repeated_tool_inputs'] = sum(a['client']['repeated_tool_inputs'] for s in summary['stages'] for a in s['attempts'])
+        summary['automatic_feedback_count'] = sum(s.get('automatic_feedback_count', 0) for s in summary['stages'])
+        summary['human_interventions'] = 0
+        summary['stagnation_count'] = sum(s.get('stagnation_count', 0) for s in summary['stages'])
+        summary['stages_passed_without_feedback'] = sum(bool(s.get('passed_without_feedback')) for s in summary['stages'])
+        summary['passed_without_feedback'] = summary['completed'] and summary['automatic_feedback_count'] == 0
+        summary['budget'] = {'max_feedback_per_stage': args.max_feedback, 'max_minutes': args.max_minutes,
+                             'turn_timeout_s': args.stage_timeout}
         (run_dir / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
         emit({k: summary[k] for k in ('model', 'completed', 'elapsed_s', 'stages_passed', 'tool_calls', 'tool_errors', 'model_requests', 'repeated_tool_inputs', 'stop_reason')})
         if summary.get('error'):
@@ -218,13 +202,17 @@ def main():
         execute = sub.add_parser(name)
         execute.add_argument('--model', choices=['deepseek-pro', 'Kimi-k3'], required=True)
         execute.add_argument('--stages', type=int, default=len(STAGES))
-        execute.add_argument('--max-minutes', type=float, default=45)
-        execute.add_argument('--stage-timeout', type=float, default=600)
-        execute.add_argument('--repairs', type=int, default=2)
+        execute.add_argument('--max-minutes', type=positive, default=45)
+        execute.add_argument('--stage-timeout', type=positive, default=1200)
+        execute.add_argument('--max-feedback', type=feedback_budget, default=8)
     check = sub.add_parser('verify')
     check.add_argument('--workspace', type=Path, required=True)
     check.add_argument('--stage', type=int, required=True)
     args = parser.parse_args()
+    if args.mode != 'verify' and not 1 <= args.stages <= len(STAGES):
+        parser.error('--stages 超出可用阶段范围')
+    if args.mode == 'verify' and not 1 <= args.stage <= len(STAGES):
+        parser.error('--stage 超出可用阶段范围')
     if args.mode == 'verify':
         result = verify(args.workspace.resolve(), args.stage)
         emit(result)

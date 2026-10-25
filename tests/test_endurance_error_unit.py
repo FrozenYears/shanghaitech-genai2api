@@ -178,7 +178,7 @@ def test_empty_continuation_budget_delivers_one_complete_batch(monkeypatch, budg
     ("bad_json", "tool_call_parse_error"),
     ("empty_incomplete", "upstream_stream_incomplete"),
 ])
-def test_nonempty_or_failed_generation_is_never_replayed(monkeypatch, mode, expected_code):
+def test_nonempty_or_failed_generation_is_never_replayed_with_repair_disabled(monkeypatch, mode, expected_code):
     requested = []
     action = '@@ACTION@@{"calls":[{"operation":"write","parameters":{"path":"x","content":"valid"}}]}@@END_ACTION@@'
 
@@ -217,7 +217,7 @@ def test_nonempty_or_failed_generation_is_never_replayed(monkeypatch, mode, expe
 
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda *a: "xinference")
     monkeypatch.setattr(genai.requests, "post", post)
-    app = create_app(Config(Token(), 0, None, False, "both"))
+    app = create_app(Config(Token(), 0, None, False, "both", tool_repair_attempts=0))
     path, body = request_body("chat", True)
     response = app.test_client().post(path, json=body)
     failure = error_from(response, True)
@@ -355,10 +355,16 @@ def test_no_tool_generation_has_no_continuations_or_tool_deadline(monkeypatch, c
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda *a: "xinference")
     monkeypatch.setattr(genai.requests, "post", post)
     config = Config(Token(), 0, None, False, empty_continuations=3, tool_request_timeout_seconds=1)
-    events = list(genai.iter_genai_stream("question", [], "chatglm", 1000, config))
-    assert events[-1]["type"] == "done"
-    assert not any(event["type"] == "error" for event in events)
-    assert "".join(event.get("content", "") for event in events) == content
+    app = create_app(config)
+    response = app.test_client().post("/v1/chat/completions", json={
+        "model": "chatglm", "messages": [{"role": "user", "content": "question"}], "max_tokens": 1000,
+    })
+    if content:
+        assert response.status_code == 200
+        assert response.get_json()["choices"][0]["message"]["content"] == content
+    else:
+        assert response.status_code == 502
+        assert response.get_json()["error"]["code"] == "upstream_empty_response"
     assert requested == [True]
     assert closed
 

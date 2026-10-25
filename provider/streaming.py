@@ -9,6 +9,20 @@ from tools.contracts import ToolContractError, validate_tool_calls
 from tools.parsing import extract_tool_calls, find_tool_call_open, tool_call_prefix_len
 
 
+NATIVE_TOOL_ERRORS = frozenset({
+    "Native tool calls must be an array",
+    "Native tool call fragment must be an object",
+    "Native tool call has an invalid index",
+    "Unsupported native tool call type",
+    "Invalid native tool call ID",
+    "Invalid native tool function",
+    "Invalid native tool call fragment",
+    "Native tool call output was truncated",
+    "Native tool calls did not complete",
+    "Native tool call indices are incomplete",
+    "Native tool call is incomplete",
+})
+
 class StreamControl:
     def __init__(self, timeout=None):
         self.cancelled = threading.Event()
@@ -120,6 +134,7 @@ def validated_events(source, tools=None, tool_choice=None, parallel_tool_calls=T
     captured = False
     visible_text = False
     source_parts = []
+    normal_completion = False
     try:
         for event in source:
             kind = event["type"]
@@ -160,6 +175,13 @@ def validated_events(source, tools=None, tool_choice=None, parallel_tool_calls=T
                 continue
             if kind != "done":
                 continue
+            normal_completion = event.get("finish_reason") in ("stop", "tool_calls")
+            if event.get("tool_error"):
+                diagnostic = event["tool_error"]
+                raise ToolContractError(diagnostic, feedback=(
+                    "原生工具批次校验失败：" + diagnostic + "；请重新生成完整合法批次。"
+                    if diagnostic in NATIVE_TOOL_ERRORS else None
+                ))
             native = event.get("tool_calls")
             if native:
                 calls, remaining = native, buffer
@@ -182,7 +204,10 @@ def validated_events(source, tools=None, tool_choice=None, parallel_tool_calls=T
             return
         yield {"type": "error", "message": "Upstream stream ended before completion", "code": "upstream_stream_incomplete"}
     except (ValueError, UpstreamError) as exc:
-        yield {"type": "error", "message": str(exc), "code": getattr(exc, "code", "tool_call_parse_error")}
+        error = {"type": "error", "message": str(exc), "code": getattr(exc, "code", "tool_call_parse_error")}
+        if normal_completion and isinstance(exc, ToolContractError):
+            error["repair_feedback"] = exc.feedback
+        yield error
     finally:
         close = getattr(source, "close", None)
         if close is not None:

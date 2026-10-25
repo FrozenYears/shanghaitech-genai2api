@@ -13,6 +13,9 @@ class ToolCallParseError(ToolContractError):
 
     code = "tool_call_parse_error"
 
+    def __init__(self, message):
+        super().__init__(message, feedback="显式工具协议无法解析：检查 JSON、调用成员及协议标记是否完整闭合，重新输出完整批次。")
+
 
 DSML_OPEN_PREFIX_FULLWIDTH = "<｜DSML｜"
 DSML_OPEN_PREFIX_ASCII = "<|DSML|"

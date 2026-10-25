@@ -15,9 +15,11 @@ class ToolContractError(ValueError):
 
     code = "tool_contract_error"
 
-    def __init__(self, message, *, code=None):
+    def __init__(self, message, *, code=None, feedback=None):
         super().__init__(message)
         self.code = code or type(self).code
+        # 新增反馈绝不从异常文本拼接：JSON 键名、实例路径也可能是敏感参数。
+        self.feedback = feedback or "工具批次结构或工具选择不符合原请求约束；请重新生成完整合法批次。"
 
 
 def _unique_object(pairs):
@@ -52,7 +54,8 @@ def strict_json_loads(text):
     try:
         return strict_json_decoder().decode(text)
     except (ValueError, RecursionError) as exc:
-        raise ToolContractError("Invalid tool JSON: " + str(exc)) from exc
+        raise ToolContractError("Invalid tool JSON: " + str(exc),
+                                feedback="工具参数 JSON 无效、重复键或数值非法；请输出完整严格 JSON 对象。") from exc
 
 
 def _check_references(value):
@@ -125,11 +128,11 @@ def validate_tool_calls(calls, tools, tool_choice=None, parallel_tool_calls=True
     if not isinstance(calls, (list, tuple)):
         raise ToolContractError("tool_calls must be an array")
     if choice == "none" and calls:
-        raise ToolContractError("Tool calls are disabled")
+        raise ToolContractError("Tool calls are disabled", feedback="原请求禁止工具调用；请只返回最终答复。")
     if (choice == "required" or named is not None) and not calls:
-        raise ToolContractError("Required tool call was not returned")
+        raise ToolContractError("Required tool call was not returned", feedback="原请求明确要求调用工具，但未返回任何完整调用。")
     if not parallel_tool_calls and len(calls) > 1:
-        raise ToolContractError("Parallel tool calls are disabled")
+        raise ToolContractError("Parallel tool calls are disabled", feedback="原请求禁止并行调用；一个批次只能包含一个调用。")
     result = []
     ids = set()
     for call in calls:
@@ -140,7 +143,7 @@ def validate_tool_calls(calls, tools, tool_choice=None, parallel_tool_calls=True
             raise ToolContractError("Missing tool function")
         name = function.get("name")
         if not isinstance(name, str) or name not in validators or (named is not None and name != named):
-            raise ToolContractError("Tool call is not allowed")
+            raise ToolContractError("Tool call is not allowed", feedback="调用的工具不在原工具列表或不符合 tool_choice；请使用允许的工具。")
         raw = function.get("arguments")
         arguments = strict_json_loads(raw) if isinstance(raw, str) else raw
         if not isinstance(arguments, dict):
@@ -158,6 +161,9 @@ def validate_tool_calls(calls, tools, tool_choice=None, parallel_tool_calls=True
             raise ToolContractError(
                 f"Tool {name!r} arguments fail {exc.validator} at {path}{missing}"[:512],
                 code="tool_arguments_invalid",
+                feedback=(f"工具参数未通过 JSON Schema 的 {exc.validator} 校验"
+                          + ("；缺少必需字段：" + ", ".join(names) if missing else "")
+                          + "。请依据原工具 schema 重新生成，不要猜测参数值。"),
             ) from exc
         except (ValueError, Unresolvable, RecursionError) as exc:
             raise ToolContractError("Tool arguments could not be validated for " + name,

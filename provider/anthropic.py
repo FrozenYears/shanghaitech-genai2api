@@ -4,7 +4,6 @@ import uuid
 from typing import Any, Dict, Generator, List, Tuple
 
 from provider.genai import estimate_messages_tokens, estimate_text_tokens, iter_genai_stream
-from provider.streaming import validated_events
 from tools.contracts import strict_json_loads, validate_tool_request
 from tools.parsing import CODE_QUOTE_RE, ACTION_CLOSE_MARKER, ACTION_OPEN_MARKER
 from tools.prompts import escape_tool_control_markers, inject_tool_prompt, normalize_content, merge_content, flatten_message_content
@@ -353,9 +352,9 @@ def stream_genai_as_anthropic(
         if block_type is not None:
             yield sse("content_block_stop", {"type": "content_block_stop", "index": index})
 
-    source = iter_genai_stream(chat_info, history, model, max_tokens, config, token=token,
-                               upstream_options=upstream_options, recover_empty=bool(tools))
-    events = validated_events(source, tools, tool_choice, parallel_tool_calls)
+    events = iter_genai_stream(chat_info, history, model, max_tokens, config, token=token,
+                               upstream_options=upstream_options, recover_empty=bool(tools),
+                               tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls)
     try:
         for event in events:
             if event["type"] == "heartbeat":

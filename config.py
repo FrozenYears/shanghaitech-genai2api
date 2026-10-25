@@ -18,12 +18,15 @@ class Config:
     api_key: str | None
     debug: bool
     api_format: str = "both"  # "openai", "anthropic", or "both"
-    empty_continuations: int = 3
-    tool_request_timeout_seconds: float = 600.0
+    empty_continuations: int = 8
+    tool_request_timeout_seconds: float = 900.0
+    tool_repair_attempts: int = 3
 
     def __post_init__(self):
-        if type(self.empty_continuations) is not int or not 0 <= self.empty_continuations <= 10:
-            raise ValueError("empty_continuations must be an integer between 0 and 10")
+        if type(self.empty_continuations) is not int or not 0 <= self.empty_continuations <= 30:
+            raise ValueError("empty_continuations must be an integer between 0 and 30")
+        if type(self.tool_repair_attempts) is not int or not 0 <= self.tool_repair_attempts <= 10:
+            raise ValueError("tool_repair_attempts must be an integer between 0 and 10")
         timeout = self.tool_request_timeout_seconds
         if type(timeout) not in (int, float):
             raise ValueError("tool_request_timeout_seconds must be a finite positive number")

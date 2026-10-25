@@ -69,58 +69,87 @@ def split_history_messages(messages):
 
 
 def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token=None, upstream_options=None,
-                      recover_empty=False):
-    """完全空 stop 可按预算继续；所有生成共享一个时限，不重放客户端工具。"""
-    budget = config.empty_continuations if recover_empty else 0
-    timeout = config.tool_request_timeout_seconds if recover_empty else None
+                      recover_empty=False, tools=None, tool_choice=None, parallel_tool_calls=True):
+    """逐代原子校验；空继续和未交付坏调用纠错共用一个心跳、取消和时限窗口。"""
+    empty_budget = config.empty_continuations if recover_empty else 0
+    repair_budget = config.tool_repair_attempts if tools else 0
+    timeout = config.tool_request_timeout_seconds if recover_empty or tools else None
 
     def source(control):
         question = chat_info
-        for attempt in range(budget + 1):
+        empty_count = repair_count = 0
+        while True:
             if control.cancelled.is_set():
                 return
             if control.remaining() == 0:
                 yield {"type": "error", "code": "upstream_request_timeout",
-                       "message": "Tool-request generation deadline exhausted before another continuation"}
+                       "message": "Tool-request generation deadline exhausted before another generation"}
                 return
-            emitted = False
-            completed = False
-            with closing(_iter_genai_stream(question, history_messages, model, max_tokens, config,
-                                             token, upstream_options, control)) as upstream:
-                for event in upstream:
+            raw_nonempty = False
+            raw_empty_stop = False
+            delivered = False
+
+            def raw_events():
+                nonlocal raw_nonempty, raw_empty_stop
+                with closing(_iter_genai_stream(question, history_messages, model, max_tokens, config,
+                                                 token, upstream_options, control)) as upstream:
+                    for event in upstream:
+                        if event["type"] == "delta" and (event.get("content") or event.get("reasoning")):
+                            raw_nonempty = True
+                        if event["type"] == "done":
+                            raw_empty_stop = (not raw_nonempty and not event.get("tool_calls")
+                                              and not event.get("tool_error")
+                                              and event.get("finish_reason") == "stop")
+                        yield event
+
+            with closing(validated_events(raw_events(), tools, tool_choice, parallel_tool_calls)) as events:
+                for event in events:
+                    if control.cancelled.is_set():
+                        return
                     if event["type"] == "delta" and (event.get("content") or event.get("reasoning")):
-                        emitted = True
-                    if event["type"] == "error":
+                        delivered = True
+                    if event["type"] != "error":
                         yield event
-                        return
-                    if event["type"] == "done":
-                        completed = True
-                        if (recover_empty and not emitted and not event.get("tool_calls")
-                                and event.get("finish_reason") == "stop"):
-                            if control.cancelled.is_set():
-                                return
-                            if attempt < budget:
-                                # 历史不变；次数标记反映真实继续次数，避免反复发送同一空问题。
-                                question = chat_info + (
-                                    f"\n\n本请求第 {attempt + 1}/{budget} 次空完成继续。"
-                                    "上一轮生成已结束，但没有返回任何正文、思考或工具调用，"
-                                    "没有新的工具调用交付给客户端。请根据完整历史和当前任务继续："
-                                    "需要操作时给出完整合法调用，否则给出最终答复。"
-                                    "历史工具结果已经实际执行，不要重复已完成的操作，也不要模拟结果。"
-                                )
-                                logger.warning("GenAI completed empty model=%s; continuation=%d/%d",
-                                               model, attempt + 1, budget)
-                                break
-                            yield {"type": "error", "code": "upstream_empty_response",
-                                   "message": f"Upstream completed empty after {budget} continuations; no tool call was delivered"}
+                        if event["type"] == "done":
                             return
-                        yield event
-                        return
-                    yield event
+                        continue
+                    if recover_empty and raw_empty_stop and not delivered:
+                        if empty_count >= empty_budget:
+                            yield {"type": "error", "code": "upstream_empty_response",
+                                   "message": f"Upstream completed empty after {empty_count} continuations; recovery exhausted; no tool call was delivered"}
+                            return
+                        empty_count += 1
+                        question = chat_info + (
+                            f"\n\n本请求第 {empty_count}/{empty_budget} 次空完成继续。"
+                            "上一轮生成正常结束，但没有任何正文、思考或工具调用，"
+                            "没有新的工具调用交付给客户端。请根据完整原历史、工具 schema 和约束继续："
+                            "需要操作时给出完整合法调用，否则给出最终答复。"
+                            "历史工具结果已经实际执行，不要重复已完成的操作，也不要模拟结果。"
+                        )
+                        logger.warning("GenAI recovery model=%s empty=%d/%d repair=%d/%d",
+                                       model, empty_count, empty_budget, repair_count, repair_budget)
+                        break
+                    feedback = event.get("repair_feedback")
+                    if tools and feedback and not delivered:
+                        if repair_count >= repair_budget:
+                            yield {key: value for key, value in {
+                                **event, "message": event["message"] + f"; tool repair recovery exhausted ({repair_count}/{repair_budget})"
+                            }.items() if key != "repair_feedback"}
+                            return
+                        repair_count += 1
+                        question = chat_info + (
+                            f"\n\n本请求第 {repair_count}/{repair_budget} 次工具协议纠错。"
+                            "本次坏调用整批尚未交付给客户端，也没有执行；没有工具结果可用。"
+                            f"安全校验错误：{feedback}"
+                            "保留原问题、完整原历史、工具 schema、tool_choice 和并行约束，重新生成完整合法批次或允许的最终答复。"
+                            "不要猜测或自动补齐未知参数，不要虚构执行结果，不要重复历史已经完成的操作。"
+                        )
+                        logger.warning("GenAI recovery model=%s empty=%d/%d repair=%d/%d",
+                                       model, empty_count, empty_budget, repair_count, repair_budget)
+                        break
+                    yield {key: value for key, value in event.items() if key != "repair_feedback"}
+                    return
                 else:
-                    if not completed and not control.cancelled.is_set():
-                        yield {"type": "error", "message": "Upstream stream ended before completion",
-                               "code": "upstream_stream_incomplete"}
                     return
     yield from heartbeat_events(source, timeout=timeout)
 
@@ -194,6 +223,7 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
         truncated = False
         stream_ended = False
         native_calls = {}
+        native_error = None
         for line in response.iter_lines(chunk_size=1):
             if control.cancelled.is_set():
                 return
@@ -250,29 +280,42 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
             if not choices:
                 continue
             delta = choices[0].get("delta") or {}
-            for fragment in delta.get("tool_calls") or []:
+            fragments = delta.get("tool_calls") or []
+            if not isinstance(fragments, list):
+                native_error = "Native tool calls must be an array"
+                fragments = []
+            for fragment in fragments:
+                if not isinstance(fragment, dict):
+                    native_error = "Native tool call fragment must be an object"
+                    continue
                 index = fragment.get("index")
                 if type(index) is not int or index < 0:
-                    raise ValueError("Native tool call has an invalid index")
+                    native_error = "Native tool call has an invalid index"
+                    continue
                 call = native_calls.get(index)
                 if call is None:
                     call = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
                     native_calls[index] = call
                 if fragment.get("type", "function") != "function":
-                    raise ValueError("Unsupported native tool call type")
+                    native_error = "Unsupported native tool call type"
                 value = fragment.get("id")
                 if value is not None:
                     if not isinstance(value, str):
-                        raise ValueError("Invalid native tool call ID")
-                    call["id"] += value
+                        native_error = "Invalid native tool call ID"
+                    else:
+                        call["id"] += value
                 function = fragment.get("function") or {}
+                if not isinstance(function, dict):
+                    native_error = "Invalid native tool function"
+                    continue
                 for key in ("name", "arguments"):
                     value = function.get(key)
                     if value is not None:
                         if not isinstance(value, str):
-                            raise ValueError("Invalid native tool call fragment")
-                        call["function"][key] += value
-                        emitted_tokens += estimate_text_tokens(value)
+                            native_error = "Invalid native tool call fragment"
+                        else:
+                            call["function"][key] += value
+                            emitted_tokens += estimate_text_tokens(value)
             if max_tokens and emitted_tokens >= max_tokens:
                 truncated = True
                 stream_ended = True
@@ -299,16 +342,13 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
         calls = [native_calls[index] for index in sorted(native_calls)]
         if calls:
             if truncated or finish_reason == "length":
-                raise ValueError("Native tool call output was truncated")
-            if finish_reason not in ("tool_calls", "stop"):
-                raise ValueError("Native tool calls did not complete")
-            if sorted(native_calls) != list(range(len(calls))):
-                raise ValueError("Native tool call indices are incomplete")
-            for call in calls:
-                if not call["id"] or not call["function"]["name"]:
-                    raise ValueError("Native tool call is incomplete")
-                if not isinstance(strict_json_loads(call["function"]["arguments"]), dict):
-                    raise ValueError("Native tool call arguments must be an object")
+                native_error = "Native tool call output was truncated"
+            elif finish_reason not in ("tool_calls", "stop"):
+                native_error = "Native tool calls did not complete"
+            elif sorted(native_calls) != list(range(len(calls))):
+                native_error = "Native tool call indices are incomplete"
+            elif any(not call["id"] or not call["function"]["name"] for call in calls):
+                native_error = "Native tool call is incomplete"
         if control.cancelled.is_set():
             return
         if genai_data.get("netGo") and not truncated:
@@ -329,7 +369,8 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
                     yield {"type": "delta", "content": sources, "reasoning": None, "sources": True}
             except (requests.RequestException, UpstreamError, ValueError):
                 logger.warning("补充检索列表获取失败；保留已返回的正文引用", exc_info=True)
-        yield {"type": "done", "finish_reason": "length" if truncated else finish_reason, "tool_calls": calls}
+        yield {"type": "done", "finish_reason": "length" if truncated else finish_reason,
+               "tool_calls": calls, "tool_error": native_error}
 
     except Exception as e:
         if control.cancelled.is_set():
@@ -350,9 +391,10 @@ def collect_genai_response(chat_info, messages, model, max_tokens, config, upstr
     finish_reason = None
     tool_calls = []
     history = split_history_messages(messages)
-    source = iter_genai_stream(chat_info, history, model, max_tokens, config, upstream_options=upstream_options,
-                              recover_empty=bool(tools))
-    for event in validated_events(source, tools, tool_choice, parallel_tool_calls):
+    events = iter_genai_stream(chat_info, history, model, max_tokens, config, upstream_options=upstream_options,
+                              recover_empty=bool(tools), tools=tools, tool_choice=tool_choice,
+                              parallel_tool_calls=parallel_tool_calls)
+    for event in events:
         if event["type"] == "error":
             raise UpstreamError(event["message"], code=event.get("code", "upstream_error"))
         if event["type"] == "delta":
@@ -389,9 +431,9 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config, upstre
         return f"data: {json.dumps(value, ensure_ascii=False)}\n\n"
 
     yield chunk({"role": "assistant", "content": ""})
-    source = iter_genai_stream(chat_info, split_history_messages(messages), model, max_tokens, config,
-                               upstream_options=upstream_options, recover_empty=bool(tools))
-    events = validated_events(source, tools, tool_choice, parallel_tool_calls)
+    events = iter_genai_stream(chat_info, split_history_messages(messages), model, max_tokens, config,
+                               upstream_options=upstream_options, recover_empty=bool(tools),
+                               tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls)
     try:
         for event in events:
             if event["type"] == "heartbeat":

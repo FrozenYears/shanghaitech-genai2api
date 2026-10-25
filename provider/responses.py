@@ -5,7 +5,6 @@ from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 from provider.anthropic import parse_tool_arguments
 from provider.genai import estimate_text_tokens, iter_genai_stream
-from provider.streaming import validated_events
 from provider.features import is_web_search_tool
 from tools.parsing import ACTION_CLOSE_MARKER, ACTION_OPEN_MARKER
 from tools.prompts import escape_tool_control_markers, flatten_message_content, normalize_content, merge_content
@@ -508,9 +507,9 @@ def stream_genai_as_responses(
                 yield ev("response.output_item.done", {"output_index": index, "item": item})
                 output_items.append(item)
 
-    source = iter_genai_stream(chat_info, history_messages, model, max_tokens, config,
-                               upstream_options=upstream_options, recover_empty=bool(tools))
-    events = validated_events(source, tools, tool_choice, parallel_tool_calls)
+    events = iter_genai_stream(chat_info, history_messages, model, max_tokens, config,
+                               upstream_options=upstream_options, recover_empty=bool(tools),
+                               tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls)
     try:
         for event in events:
             if event["type"] == "heartbeat":

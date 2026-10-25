@@ -22,8 +22,9 @@ pixi install
 GENAI_TOKEN=学号@密码
 PORT=31100
 API_FORMAT=both
-GENAI_EMPTY_CONTINUATIONS=3
-GENAI_TOOL_REQUEST_TIMEOUT_SECONDS=600
+GENAI_EMPTY_CONTINUATIONS=8
+GENAI_TOOL_REPAIR_ATTEMPTS=3
+GENAI_TOOL_REQUEST_TIMEOUT_SECONDS=900
 ```
 
 `GENAI_TOKEN` 也可以填写 JWT。`.env` 已被 Git 忽略，不会提交凭据；图片上传所需的令牌由代理从前端脚本自动获取，无需手工配置。
@@ -39,7 +40,7 @@ pixi run serve
 命令行参数可以覆盖 `.env` 中的设置：
 
 ```bash
-pixi run serve --port 31200 --api-format anthropic --empty-continuations 3 --tool-request-timeout 600
+pixi run serve --port 31200 --api-format anthropic --empty-continuations 8 --tool-repair-attempts 3 --tool-request-timeout 900
 ```
 
 也可以直接运行任意 `pixi run python main.py ...` 命令。
@@ -109,8 +110,9 @@ wire_api = "responses"
 | `--port` | 服务监听端口（也可写入 `.env` 的 `PORT`） | `31100` |
 | `--api-key` | 客户端认证密钥（也可通过 `API_KEY` 环境变量设置） | 无 |
 | `--api-format` | `openai`、`anthropic` 或 `both`（也可写入 `.env` 的 `API_FORMAT`） | `both` |
-| `--empty-continuations` | 工具请求的额外空继续次数；环境变量 `GENAI_EMPTY_CONTINUATIONS`，整数 `0..10`，0 仅禁用额外继续 | `3`（含首次最多 4 次生成） |
-| `--tool-request-timeout` | 工具请求首次及所有继续共享的上游生成窗口（秒）；环境变量 `GENAI_TOOL_REQUEST_TIMEOUT_SECONDS`，有限正数 | `600` |
+| `--empty-continuations` | 工具请求额外空继续；环境变量 `GENAI_EMPTY_CONTINUATIONS`，整数 `0..30`，0 禁用 | `8` |
+| `--tool-repair-attempts` | 未交付坏调用的额外纠错；环境变量 `GENAI_TOOL_REPAIR_ATTEMPTS`，整数 `0..10`，0 禁用 | `3` |
+| `--tool-request-timeout` | 首次、空继续及工具纠错共享的上游生成窗口（秒）；环境变量 `GENAI_TOOL_REQUEST_TIMEOUT_SECONDS`，有限正数 | `900` |
 | `--debug` | 启用详细日志输出 | 关闭 |
 
 ## 特性
@@ -227,21 +229,41 @@ Pi 0.85.1 屏蔽用户插件后的真实验证见 [PI_REAL_WORLD_VALIDATION.md](
 
 流式请求先发送协议开始事件，再持续交付安全正文和独立思考增量；第一跳等待上游时每 10 秒发送心跳，relay 转发上游心跳。工具参数在完整响应结束、JSON/Schema/choice 校验后整批交付，不提前执行半截参数。流中错误不再发送成功结束事件，Responses 还发送 `response.failed`。断开或总时限到期会关闭已取得的实际上游响应/socket；尚未取得响应头的阻塞连接不能立即打断，但主响应按总时限失败，worker 返回后清理且不再发新继续，不能承诺立即取消远端推理。
 
-### 工具请求的空继续预算与总时限
+### 工具请求的自动恢复与预算
 
-只有启用工具协议恢复（`recover_empty=True`）的请求，在网页返回**零正文、零思考、零调用且正常 `stop`**时，才由**第一跳**恢复。默认额外继续 `N=3`，加上首次最多 4 次生成；可配置 `0..10`，0 仅禁用额外继续。relay native 不再重试生成，避免两层预算相乘。
+恢复只由第一跳负责，relay native 不叠加重试。两个预算独立累计，彼此不重置：
 
-每次继续都保留完整原历史，使用原 `chatInfo` 加真实“第 k/N 次”标记与明确继续指令；不累积空 assistant 或旧继续提示，不切模型、不降级 text、不执行或重放客户端工具。思考/正文已产生、坏 JSON/Schema、解析失败、断流或截断均禁止重放。次数耗尽仍为空，返回 `upstream_empty_response`；普通无工具请求不空继续，空完成也不伪报成功。
+- **完全空完成**：零原始正文、零思考、零调用且正常 `stop`，默认额外继续 8 次。
+- **未交付坏调用**：上游正常结束，但显式工具协议/JSON/Schema/选择约束不合法，且没有任何正文、思考或工具批次交付，默认让模型重新生成 3 次。不补参数、不修括号、不挑选坏批次中的合法成员执行。
 
-工具协议请求从首次上游生成开始，共享默认 **600 秒**窗口（不含附件预处理），首次与所有继续共用 deadline；ping、心跳和下一次继续均不续期。即使已输出正文/思考或正在缓存调用，到期仍以 `upstream_request_timeout` 失败，不交付未完成校验的调用。额外次数为 0 时仍受该时限；普通无工具请求不加这一工具请求时限。
+默认一个请求最多 `1 + 8 + 3 = 12` 次生成，共享 **900 秒**窗口（不含附件预处理）；ping、心跳、新一代及类别切换都不续期。每次使用原问题加真实次数/安全错误反馈，保留完整原历史和工具约束，不积累虚构 assistant/tool 结果，不切模型、不降级 text。
 
-这不是网络 read timeout，也不是整场 agent 的任务时长：单次 HTTP 读等待限制不能约束持续收到 ping 的流，而 agent 可跨多个请求和工具执行运行。预算只覆盖没有交付有效内容的空完成，增加它不会放宽调用校验或重放已执行工具，但平台仍可能持续空返或超时。耗尽后当前 HTTP 仍会中断；代理必须报告真实失败，agent 可依据完整历史、实际工具结果和错误显式继续，不能承诺任务永不中断。恢复 decision 图与完整配置边界见 [阶段说明第四节](STAGE_NATIVE_FIRST.md#4-sse-生命周期终态与取消)。
+已交付正文/思考、网络错误、提前断流、长度截断、取消和到期均不适用协议纠错。普通非空计划不会被猜成任务未完成而在反代中重试。次数耗尽保留具体错误码并说明恢复耗尽；到期为 `upstream_request_timeout`；都不发送成功终态。普通无工具请求不使用这些恢复预算或工具总时限。完整状态边界见 [架构第四节](STAGE_NATIVE_FIRST.md#4-sse-生命周期终态与取消)。
+
+### 无需逐次人工输入的 omp 任务监督
+
+反代不知道业务验收条件。新增 [`supervise.py`](validation/native-first-endurance/supervise.py) 使用真实 omp、用户现有 GenAI 配置、同一会话与工作目录，在每轮结束后运行操作者指定的独立验收；错误结束、只给计划、验收失败和重复停滞会自动提交真实反馈继续，不需要每次人工输入。默认额外 8 次反馈、整场 45 分钟、单轮 1200 秒。它是**可选的 agent 监督器，不会自动安装到其他客户端或修改全局 omp 配置**。
+
+```bash
+pixi run python -B validation/native-first-endurance/supervise.py \
+  --model Kimi-k3 --workspace D:/work/project \
+  --task-file D:/trusted/task.txt --verify-argv-file D:/trusted/checker-argv.json \
+  --artifact-dir D:/audit/new-run --max-feedback 8 --max-minutes 45
+```
+
+`checker-argv.json` 是可信可执行程序的字符串数组，例如 `["D:/shanghaitech-genai2api/.pixi/envs/default/python.exe", "-B", "D:/trusted/check.py"]`。验收以进程退出码为准，`shell=False`，有超时、有界输出及环境凭据过滤；验收器和审计目录应放在模型工作目录外。默认 agent 没有 bash，只有显式 `--allow-bash-pattern` 才开放对应模式；这不是 OS 沙箱，文件工具权限仍取决于客户端。
+
+单请求恢复耗尽不等于立即等人：监督器会根据真实状态自动发新回合，先回读磁盘再增量修复，不重放旧操作。任务反馈或总时间预算耗尽后，保存 `result.json`、`checkpoint.json`、会话和逐轮验收并非零退出；不无限循环、不伪报成功。当前没有跨进程自动恢复；权限/身份故障或超时 abort 后无法确认会话停稳，也会明确停止，避免并发操作。
+
+同一套 20 阶段长期验收可用 `validation/native-first-endurance/run.py run --model deepseek-pro --stages 20 --max-feedback 8 --max-minutes 45 --stage-timeout 1200`。旧 `--repairs` 已移除；旧报告的两次“显式反馈”本来就是脚本自动发消息，不代表逐轮人工纠错。
+
+本轮正式双跳长测中，两模型均完成20阶段且最终71项累计验收通过；Kimi的两次协议错误和SQLite计划停滞由监督器自动反馈恢复，无人工逐次输入。完整成功/失败过程及未用满预算等限制见[最新测试报告](TEST_REPORT_deepseek_pro.md#2026-10-25未交付工具纠错与自动监督正式长测)和[架构第十节](STAGE_NATIVE_FIRST.md#10-当前双类别恢复与监督器的正式验证)。这不保证未使用监督器的其他客户端也会自动接续。
 
 两跳保留结构化错误的安全 `message/type/code`，区分 `upstream_request_timeout`、`upstream_empty_response`、`upstream_stream_incomplete`、`upstream_stream_error`、`tool_call_parse_error` 和 `tool_arguments_invalid`。Schema 错误只说明约束、字段和位置，不回显参数值；relay 限长并遮蔽凭据，不转发整个错误体。历史一次继续修复及取证边界见 [阶段说明的根因分析](STAGE_NATIVE_FIRST.md#8-历史持续工作故障的根因与一次继续修复)，不将其旧测试数或服务 PID 当成本轮部署证据。
 
 ## 已知限制
 
-- **令牌过期的恢复仍有缺口**：模型元数据与文档上传阶段遇到失效令牌时，实际观察到 HTTP 500 或流中断，尚未统一恢复与正确传播错误。历史 Pi 验证曾通过重启恢复登录，不能据此认定该缺口已修复。当前预算版本已经重启部署，正式复测见 [架构说明第九节](STAGE_NATIVE_FIRST.md#9-当前预算版本的部署与实际复测)。
+- **令牌过期的恢复仍有缺口**：模型元数据与文档上传阶段遇到失效令牌时，实际观察到 HTTP 500 或流中断，尚未统一恢复与正确传播错误。历史 Pi 验证曾通过重启恢复登录，不能据此认定该缺口已修复。各阶段部署与实际复测见 [架构说明](STAGE_NATIVE_FIRST.md)，历史 PID 和测试数不代表当前进程。
 - **模型名完全透传**：请求里的 `model` 会直接作为 GenAI 平台的 `aiType` 发送，不做任何映射。请填写平台真实存在的模型 id。
 - **无服务端会话状态**：Responses 的 `previous_response_id`、`item_reference`、`store=true` 等不能在本代理恢复状态，明确返回 400。客户端必须每轮发送完整历史。
 - **Responses API 是兼容子集**：支持 message、function_call、custom text、namespace、reasoning 与流式文本事件；custom grammar、未实现的托管工具类型不会静默忽略，而是报错。web_search 仍只映射为网页搜索，不冒充原生托管事件。普通文本长度截断返回 `response.incomplete`；工具截断返回错误且不交付调用。
@@ -256,7 +278,7 @@ Pi 0.85.1 屏蔽用户插件后的真实验证见 [PI_REAL_WORLD_VALIDATION.md](
 - **输出长度由代理本地强制**：上游不执行 `maxToken`，代理按估算 token 在本地截断，普通文本截断时 Chat 的 `finish_reason` 与 Anthropic 的 `stop_reason` 会分别返回 `length` / `max_tokens`，Responses 发出 `response.incomplete`；若截断命中工具调用，则不发出工具调用并返回错误。预算包含思维链 token，因此对推理模型给很小的 `max_tokens` 时可能只产出思维链、正文为空。
 - **usage 是本地估算**：`prompt_tokens` / `input_tokens` / `completion_tokens` 均由代理按文本估算，不是上游真实计费值。
 - **思考支持开关，不支持档位或精确预算**：客户端推理参数映射为上游 `thinking` 布尔值。模型标为不提供开关、额度不足或上游未返回思考字段时，代理不会补造思考内容。`/v1/models` 的 `capabilities` 来自平台配置，不代表已逐模型保证所有组合都可用。
-- **上游超时与错误传播**：第一跳连接超时 10 秒、网络读取间隔超时 300 秒；relay 的上游网络读取间隔默认 1800 秒，均不等于工具请求默认 600 秒共享生成窗口。持续 ping 可避免网络 read timeout，却不延长该总窗口。上游错误、提前 EOF 或损坏调用以流式 `error` / 非流式 502 返回，不把错误当正文，不发送成功完成标记。已产生正文/思考后不自动重放请求。
+- **上游超时与错误传播**：第一跳连接超时 10 秒、网络读取间隔超时 300 秒；relay 的上游网络读取间隔默认 1800 秒，均不等于工具请求默认 900 秒共享生成窗口。持续 ping 不延长该总窗口。上游错误、提前 EOF 或恢复耗尽以流式 `error` / 非流式 502 返回，不把错误当正文，不发送成功完成标记。已交付正文/思考后不自动重放请求。
 - **DeepSeek DSML 与 Kimi XTML**：支持明确闭合的 DeepSeek `invoke/parameter`（字符串原样保留、非字符串严格 JSON 解码）、既有 DSML call 变体以及 Kimi typed tools 通道；不补齐缺失标签。代码引用与 `<think>` 内的工具示例不是操作。
 
 ## 上下文探测工具

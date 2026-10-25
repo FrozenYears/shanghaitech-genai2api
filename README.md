@@ -213,11 +213,13 @@ Pi 0.85.1 屏蔽用户插件后的真实验证见 [PI_REAL_WORLD_VALIDATION.md](
 
 ## 原生优先与流式链路
 
+整体端口方向、各层职责、流式生命周期及重构前后差异见 [原生优先阶段说明](STAGE_NATIVE_FIRST.md)。该说明记录实现边界，不将阶段小验收当作正式部署后的长时实际工作结论。
+
 第一跳仍连接学校网页聊天端点：工具定义和历史通过网页可接受的文本表达，历史调用保留 ID，结果按 ID 关联。支持提取原生输出不等于网页已开放原生 function API；将 `tools/tool_choice` 直接添加到网页请求的两次短探针，DeepSeek 和 Kimi 都回答 `NO_TOOL`，未返回结构化工具字段。
 
 第二跳 `genai2agent-relay` 默认 `UPSTREAM_TOOL_MODE=native`：向第一跳发送结构化工具定义、角色与历史，消费第一跳的结构化 SSE。不会再次把已经解析的工具调用降成文本，也不会在失败后自动改用文本重放。只有显式设置 `UPSTREAM_TOOL_MODE=text` 才使用普通文本封套；代码示例不触发执行或纠错执行。两个仓库需要一起升级。
 
-学校另有独立 API。图书信息中心的 [GenAI API 接入 OpenClaw 指南](https://aiplat.shanghaitech.edu.cn/_upload/article/files/9e/52/e8e9d4574a4386cb0ccf1614b548/fe158a03-d45e-41db-a895-d3400cf328bf.pdf) 给出的 base URL 示例为 `https://genaiapi.shanghaitech.edu.cn/api/v1/start`，要求单独的个人 API Key 和网络授权。取得授权后，可将 relay 的 `UPSTREAM_BASE_URL` 指向实际获批的 API base，跳过网页第一跳；不要把网页登录 JWT 或学号密码发送给该地址。当前未用学校 API Key 验证这条直连路径，模型 ID 也不能沿用网页名称猜测。
+本阶段因无法申请独立 API Key，明确放弃学校独立官方 API 路径，不再提供远程 base 或跳过网页第一跳的配置方案。保留学校网页登录认证与两层本地代理 Key；relay 的 `UPSTREAM_BASE_URL=http://127.0.0.1:31100` 仍是必需的本地链路配置，不得因此删除，也不应把 `native` 改成 `text`。
 
 流式请求先发送协议开始事件，再持续交付安全正文和独立思考增量；第一跳等待上游时每 10 秒发送心跳，relay 转发上游心跳。工具参数在完整响应结束、JSON/Schema/choice 校验后交付，不提前执行半截参数。流中错误不再发送成功结束事件。断开后关闭上游响应并中断读取；尚未取得响应头的连接阶段只能在请求返回或超时后清理，不能承诺立即取消远端推理。
 

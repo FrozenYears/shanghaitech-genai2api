@@ -1,15 +1,18 @@
 # 本地工作日志
 
-## 当前状态：原生优先与流式重构（2026-10-25）
+## 当前状态：正式双跳部署与 omp 验收（2026-10-25）
 
 - 用户授权大量重构；根仓库和 relay 均新建 `feat/native-first-streaming`。重构前 checkpoint：根 `e682010`（保存用户已有 CHANGELOG 修改）、relay `5d3bd12`。
 - 第一跳统一工具交付边界：结构化调用优先，严格 action/XML/DSML/Kimi 解析兜底；删除裸 JSON、文档示例及损坏参数的猜测执行。完整 Schema、ID、choice、parallel、原子批次统一校验。
 - relay 默认 native，保留 tools/roles/history 与调用 ID；text 必须显式选择。支持 custom text 和 namespace；grammar、服务端状态引用等不支持能力明确拒绝。
 - 三协议即时开始事件、安全正文/思考增量及心跳；完整调用校验后交付。取消中断已取得响应的实际 socket；尚未返回响应头时仍受底层超时限制。
-- 学校官方 OpenClaw 指南确认独立 API base 示例 `https://genaiapi.shanghaitech.edu.cn/api/v1/start`，需要专属 API Key/网络授权。未使用网页登录凭据访问该端点，未声称已完成独立 API 实测。
+- 用户明确无法申请独立 API Key；现行方案放弃学校独立官方 API 和远程 base，只使用 GenAI 网页反代。`STAGE_NATIVE_FIRST.md` 记录两跳职责与重构前后差异，本地 Key 和 `UPSTREAM_BASE_URL=http://127.0.0.1:31100` 保留。
 - 回归：根 275 passed；relay 79 passed、164 subtests passed。真实验证：12 条文件工作流、48 次实际工具执行，另外 2 条 custom text + namespace 写入/结果回传闭环；详细证据和首次失败修复见 `TEST_REPORT_deepseek_pro.md` 新节。
-- 临时 HTTP 服务全部停止；原 31100/31110 没有重启，仍运行此前代码。未推送远端。用户批准删除本轮 `native-first-smoke-*` 三个目录及三个新模块缓存，保留此前测试资料。
+- 本轮已按授权停止旧第一跳 PID54264、旧 relay PID77140，在原 31100/31110 重启新代码并保持服务运行。实际监听的 Windows Python PID 为第一跳103556、relay89612（工具服务句柄 PID 不同）；第一跳全三协议，relay 明确 native + 本地31100。健康检查及两端新协议400错误行为通过。未推送远端。
 - 原有 `.pixi-cache/`、诊断脚本、启动脚本等未跟踪用户文件不纳入重构提交。
+- 长时验收主客户端按用户建议改用已安装的 omp 18.12.6。启动时读取真实RPC模型身份，确认 `GenAI/deepseek-pro`、`GenAI/Kimi-k3` 的 `openai-completions` 均指向 `http://127.0.0.1:31110/v1`；禁止模型fallback/自动请求重试/后台advisor/MCP/扩展/技能。没有修改用户全局配置。
+- 正式 omp 验收已结束：DeepSeek 480秒、9/20阶段、57次响应尝试、73次工具、9次显式反馈，预算阶段仍失败；Kimi 1903.828秒、20/20阶段、74次响应尝试、91次工具，2次流错误经显式反馈恢复，最终71项累计断言通过。固定73,728字节fixture均不变。结果见`validation/omp-endurance-2026-10-25.json`和测试报告；没有宣称无人值守无错误。
+- 用户选择保留 `.validation-runtime/omp-deepseek-pro-heo6olng`、`.validation-runtime/omp-kimi-k3-4gnve5pv` 两次正式验收原始材料，清理两次omp试点、两次中止Claude任务与外部初始Claude试点。Claude的路径权限失败、中止任务及omp短试点均不计入正式成功统计。验收源码位于`validation/native-first-endurance/`，不依赖官方API。
 
 ## 上一轮状态（重构前）
 

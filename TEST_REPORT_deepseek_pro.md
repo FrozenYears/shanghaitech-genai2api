@@ -1,5 +1,67 @@
 # deepseek-pro 反代能力测试报告
 
+## 2026-10-25：正式双跳重启后的 omp 持续开发验收
+
+**结论：Kimi 在两次显式恢复后完成约半小时的累计开发；DeepSeek 在第 10 阶段停止，不能认定长时稳定。** 原始事件、实际文件和独立验收结果与短样本分开保存，精简证据为 [omp-endurance-2026-10-25.json](validation/omp-endurance-2026-10-25.json)。
+
+### 服务与客户端身份
+
+- 已按用户授权停止旧第一跳 PID54264、relay PID77140，在原端口加载重构代码：第一跳 Python PID103556，relay Python PID89612。实现基线为根 `a7b3186`、relay `44639ec`，分支均为 `feat/native-first-streaming`。
+- 两端健康检查正常；第一跳非法工具 Schema、relay 不支持的 previous_response_id 均按新契约返回 400。验收结束后服务继续运行。第一跳沿用 `0.0.0.0:31100` 监听，relay 为 `127.0.0.1:31110`；“正式端口”不代表已迁移到生产 WSGI 服务。
+- 使用实际 omp 18.12.6 RPC 进程，不是自写 HTTP agent 冒充 omp。启动与每轮前后都核对 provider/model/base URL：`GenAI/deepseek-pro`、`GenAI/Kimi-k3`，`openai-completions`，`http://127.0.0.1:31110/v1`。
+- 路线为 omp → 正式 relay31110 → 第一跳31100 → 学校 GenAI 网页聊天端点。未使用学校独立官方 API，也未访问模型厂商官方 API。不能申请独立 Key，现行方案已放弃该路线。
+
+### 方法
+
+两个模型各自持有一个完整连续会话，启动时间相同，并发运行；DeepSeek 提前停止后 Kimi 继续。没有切模型、换供应商、清空历史或自动压缩。关闭 provider 自动重试、fallback、advisor、扩展、技能、用户规则和 MCP，仅提供 omp 内置 read/write/edit/glob/grep/bash。bash 仅允许调用指定的验收程序；这是工具策略，不是 OS 级沙箱。没有修改用户全局模型设置。
+
+任务是有意带初始错误的多模块 Python 财务流水 CLI，逐阶段增加：十进制金额、分组、CSV、SQLite 持久化、事务回滚、筛选、原子转账、冲正、期初余额、预算、批合并、CSV 导出、对账、分页、旧库迁移、模块边界、月报、分类修改、账户账单及日现金流，共 20 阶段。每阶段运行全部已有契约；独立期望在模型工作区外，实际启动新 Python 进程和 SQLite 库验收，不接受模型自报。
+
+每阶段最多两次**显式新用户反馈**，要求先检查实际文件再继续，不假定错误前工具未执行；不做请求级静默重放。每个用户轮次最多 600 秒、整个模型任务最多 45 分钟，任务完成或持续失败即结束，不 sleep 凑时长。固定 73,728 字节 fixture 不允许修改，最终哈希均保持 `d39bd84e70309e2ebfd1cb0d5dd3e9788f519845144beafa40a8330b4e960a79`。
+
+### 实际结果
+
+| 指标 | deepseek-pro | Kimi-k3 |
+| --- | ---: | ---: |
+| 实际墙钟时长 | 480.000 秒（8 分钟） | 1,903.828 秒（31 分 44 秒） |
+| 累计阶段完成 | 9 / 20 | 20 / 20 |
+| 用户轮次（含反馈） | 19 | 22 |
+| 显式反馈继续次数 | 9 | 2 |
+| 客户端记录的模型响应尝试（含错误） | 57 | 74 |
+| 实际工具执行 | 73 | 91 |
+| 工具错误（含验收失败、编辑歧义） | 2 | 1 |
+| 用户轮次以模型/传输错误结束 | 10 | 2 |
+| 最大客户端上下文估算 token | 46,341 | 56,969 |
+| 生成 Python 源码字节 | 16,312 | 28,798 |
+
+“响应尝试”来自 omp assistant 事件，不是供应商计费请求数；上下文与代理 usage 都是估算。完整用户轮次时间包含模型、工具和等待：DeepSeek 合计 415.252 秒，Kimi 合计 1,796.470 秒，其余为独立验收及运行器开销，不称为纯模型推理时间。
+
+### 失败、恢复和结束条件
+
+- **DeepSeek**：前 9 阶段累计 45 项断言通过；第 10 阶段的预算功能仍返回 unknown_operation，46 项累计断言中该项失败。记录 9 次 `First-hop returned no answer or tool call` 和 1 次 `First-hop service returned a stream error`。部分空回复发生在代码已经修改、独立验收已经通过之后，须新用户反馈才能正常结束该阶段；预算阶段初始及两次反馈均未完成，按预设边界终止。转账时一次实际验收发现 invalid_amount，后修正；一次 edit 不匹配也修正。
+- **Kimi**：第 2、6 阶段各有一次 `First-hop service returned a stream error`，显式反馈后恢复，后续历史继续使用。第 14 阶段 edit 匹配到两处，工具明确拒绝后模型补充上下文修正。最终 71 项累计断言全部通过并正常结束，固定 fixture 不变。它证明这次有界任务可恢复完成，不证明全程零错误或任意小时无人值守。
+- relay 的通用 stream error 没有给出底层序列化、校验或网络原因，本轮记录不足以把每次错误归因到某一层；空回复也只能确认第一跳交付没有可用正文/调用，不能据此断言模型底层能力不足。
+- 本次客户端选择 off，但正式第一跳日志实际为 `thinking=true`；omp 兼容映射使用的 minimal 被代理折叠为开启。这不是思考开/关对照实验。
+
+### 复现、材料与限制
+
+运行器与阶段契约位于 [validation/native-first-endurance](validation/native-first-endurance/)。正式服务及用户现有 `GenAI` 模型配置就绪后，可运行：
+
+```bash
+pixi run python -B -u validation/native-first-endurance/run.py run --model deepseek-pro
+pixi run python -B -u validation/native-first-endurance/run.py run --model Kimi-k3
+```
+
+运行器会拒绝不匹配的 provider/model/relay base，禁止其他模型兜底。每次生成独立 `.validation-runtime/omp-*` 目录，不自动删除旧材料。用户选择保留本次两个正式验收目录，删除试点和中止的 Claude Code 产物：
+
+- `.validation-runtime/omp-deepseek-pro-heo6olng`
+- `.validation-runtime/omp-kimi-k3-4gnve5pv`
+
+Claude Code 初始试点被 Windows 8.3 短路径权限检查拦截；后续 Claude Code 任务因改用 omp 而中止，不计入成功统计。omp 写/读试点同样独立：Kimi 通过，DeepSeek 写入后空回复，不能用这些短样本充当长测。
+
+本轮没有做同客户端/同任务的旧版 A/B，不能把与旧报告的差异全部归因于重构。也未重新覆盖图片、文档、搜索、托管工具或所有协议组合。**当前更合理的使用判断是：Kimi 可在有监控与恢复机制下尝试长工作；DeepSeek 的空回复和流错误仍是无人值守阻碍。**
+
+
 ## 2026-10-25：原生优先与流式重构验收
 
 分支：根仓库和 relay 均为 `feat/native-first-streaming`。使用新代码在临时 loopback 端口启动真实 HTTP 服务，连接实际 GenAI 网页模型；原 31100/31110 未重启。下面的“native relay”指 relay 与第一跳之间的结构化工具协议，不代表网页端点已接受原生工具定义。

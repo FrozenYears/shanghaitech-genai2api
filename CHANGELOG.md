@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### 原生优先与流式重构
+
+- 第一跳统一三协议的原生调用累积、严格文本解析与 JSON Schema 校验；保留调用 ID 和结果关联，支持 namespace、custom text、工具选择与并行禁用。已完成的调用才交付，任一非法成员拒绝整批。
+- 删除裸 JSON、文档代码示例、损坏标签和参数猜测的自动执行路径；拒绝重复 JSON 键、非有限数、多封套和外部 Schema 引用；增加 DeepSeek DSML invoke/parameter 的严格解析。
+- relay 默认 native 模式，向第一跳发送结构化 tools/roles/history，保留原生调用；显式 text 模式才使用封套与未交付内容前的受限纠错，不自动降级重放。
+- 三协议首事件即时发送，持续输出正文与思考增量；第一跳有界心跳桥接，relay 转发心跳。取消先中断实际 socket 读取再关闭响应；取得响应头之前的取消仍受底层请求返回/超时限制。
+- relay 响应大小预算在消费时按实际文本、思考、工具名称/ID/参数字节累计；SSE 重复元数据不挤占工具预算，单个未闭合事件另设上限。
+- 不支持的 previous_response_id、item_reference、store=true、custom grammar 等明确拒绝，不再冒充已支持。学校独立 API 的授权入口与网页聊天端点分开说明，网页登录凭据不跨端点复用。
+- 旧版封套纠错与宽松解析行为以下述历史记录为准；当前契约以 README 为准，代码示例不再被纠错为执行请求。
+
 ### 工具调用可靠性
 
 - 将完整工具定义和 JSON Schema 放在当前 user 轮次，采用 `@@ACTION@@` JSON envelope 作为主调用协议；兼容既有 `<tool_call>` 与 DSML 输出及历史。保留 system/developer 指令、历史结果与附件，要求依赖型写入／编辑／读取分轮执行并回读核验。

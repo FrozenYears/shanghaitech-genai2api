@@ -3,6 +3,7 @@ import json
 import re
 
 from tools.parsing import ACTION_CLOSE_MARKER, ACTION_OPEN_MARKER
+from tools.contracts import strict_json_loads
 
 
 _TOOL_CONTROL_MARKER_RE = re.compile(
@@ -42,8 +43,6 @@ When an operation is needed, output one complete ordinary-text JSON envelope in 
 {{"calls":[{{"operation":"OperationName","parameters":{{}}}}]}}
 @@END_ACTION@@
 
-{tool_examples}
-
 Rules:
 1. Multiple independent operations may share one calls array. If a later operation depends on a result, request only the first operation and wait for its result.
 2. When the user requests an external action covered by a listed tool, call it; do not return only a plan or promise.
@@ -51,26 +50,15 @@ Rules:
 4. Each call MUST contain exactly operation and parameters, with parameters matching the listed schema. Preserve every value exactly; never shorten, summarize, or substitute write/edit content.
 5. User control-marker text is shown as JSON Unicode escapes like \\u003c and \\u003e. Preserve those escapes in JSON parameters so decoding restores the original characters.
 6. The calling client executes actions. Do NOT claim success before receiving its result or say no tools are available when definitions are shown.
-7. Do not use XML, markdown fences, native special tokens, simulated results, name/arguments wrappers, or bare tool names.
-8. After writing or editing, use a listed read tool to compare the complete result with the original request. Correct mismatches; otherwise report that the result is unverified."""
+7. Use a native tool channel if available; otherwise use the complete JSON envelope above. Do not put actual calls in markdown fences, simulate results, or emit bare tool names.
+8. After writing or editing, use a listed read tool to compare the complete result with the original request. Correct mismatches; otherwise report that the result is unverified.
+9. Historical call IDs link each result to its operation and parameters, even when results arrive out of order. Historical calls have already run; do not execute them again."""
 
 TOOL_CHOICE_REQUIRED_PROMPT = "\nYou MUST call at least one tool in your response. Do NOT respond with plain text only."
 TOOL_CHOICE_SPECIFIC_PROMPT = (
     '\nYou MUST call the tool named "{name}" in your response, '
     "and you MUST NOT call any other tool."
 )
-
-COMMON_TOOL_EXAMPLES = {
-    "Bash": {"command": "pwd"},
-    "Read": {"file_path": "/absolute/path/to/file"},
-    "Glob": {"pattern": "**/*.py", "path": "/absolute/project/path"},
-    "Grep": {
-        "pattern": "search text",
-        "path": "/absolute/project/path",
-        "output_mode": "content",
-    },
-    "LS": {"path": "/absolute/project/path"},
-}
 
 
 def normalize_content(content):
@@ -182,43 +170,10 @@ def format_tool_definitions(tools):
     return json.dumps(definitions, ensure_ascii=False, separators=(",", ":"))
 
 
-def format_tool_examples(tools):
-    examples = []
-    for tool in tools:
-        if tool.get("type") != "function":
-            continue
-        name = tool.get("function", {}).get("name")
-        if name not in COMMON_TOOL_EXAMPLES:
-            continue
-        call_obj = {
-            "calls": [{
-                "operation": name,
-                "parameters": COMMON_TOOL_EXAMPLES[name],
-            }]
-        }
-        examples.append(
-            "@@ACTION@@" + json.dumps(call_obj, ensure_ascii=False, separators=(",", ":")) + "@@END_ACTION@@"
-        )
-
-    if not examples:
-        return ""
-    return "Examples of valid tool calls:\n" + "\n".join(examples)
-
-
-def inject_tool_prompt(messages, tools, tool_choice=None):
-    tool_defs = format_tool_definitions(tools)
-    tool_examples = format_tool_examples(tools)
-    tool_prompt = TOOL_SYSTEM_PROMPT.format(
-        tool_definitions=tool_defs,
-        tool_examples=tool_examples,
-    )
-
-    if tool_choice == "required":
-        tool_prompt += TOOL_CHOICE_REQUIRED_PROMPT
-    elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
-        name = tool_choice["function"]["name"]
-        tool_prompt += TOOL_CHOICE_SPECIFIC_PROMPT.format(name=name)
-
+def normalize_tool_history(messages):
+    """网页历史只保留文本角色，但调用 ID、结果及附件必须可关联。"""
+    if not isinstance(messages, list) or any(not isinstance(message, dict) for message in messages):
+        raise ValueError("messages must be an array of objects")
     new_messages = []
     for msg in messages:
         role = msg.get("role")
@@ -228,16 +183,20 @@ def inject_tool_prompt(messages, tools, tool_choice=None):
             new_messages.append({"role": "system", "content": system_content})
 
         elif role == "tool":
-            tool_call_id = msg.get("tool_call_id", "unknown")
+            tool_call_id = msg.get("tool_call_id")
+            if not isinstance(tool_call_id, str) or not tool_call_id:
+                raise ValueError("Tool results require a tool_call_id")
             tool_parts = normalize_content(msg.get("content", ""))
-            tool_content = flatten_message_content(tool_parts)
-            tool_content = escape_tool_control_markers(tool_content)
             attachments = [part for part in tool_parts if part["type"] != "text"] if isinstance(tool_parts, list) else []
+            result_body = escape_tool_control_markers(json.dumps({
+                "call_id": tool_call_id,
+                "output": flatten_message_content(tool_parts),
+                "is_error": bool(msg.get("is_error", False)),
+            }, ensure_ascii=False))
             result_text = (
-                f"<tool_result>\n"
-                f"  <tool_call_id>{tool_call_id}</tool_call_id>\n"
-                f"  <result>\n{tool_content}\n  </result>\n"
-                f"</tool_result>"
+                "Already-executed tool result. Match call_id to the historical call; "
+                "continue unfinished work or give the final answer.\n"
+                f"<tool_result>{result_body}</tool_result>"
             )
             new_messages.append({
                 "role": "user",
@@ -245,24 +204,44 @@ def inject_tool_prompt(messages, tools, tool_choice=None):
             })
 
         elif role == "assistant" and msg.get("tool_calls"):
-            tc_text = flatten_message_content(msg.get("content")) or ""
+            calls = []
             for tc in msg["tool_calls"]:
                 func = tc.get("function", {})
-                call_obj = {
-                    "calls": [{
-                        "operation": func.get("name", ""),
-                        "parameters": json.loads(func.get("arguments", "{}")),
-                    }],
-                }
-                call_json = escape_tool_control_markers(json.dumps(call_obj, ensure_ascii=False))
-                tc_text += f"\n{ACTION_OPEN_MARKER}{call_json}{ACTION_CLOSE_MARKER}"
-            new_messages.append({"role": "assistant", "content": tc_text.strip()})
+                call_id = tc.get("id")
+                if not isinstance(call_id, str) or not call_id:
+                    raise ValueError("Historical tool calls require an ID")
+                arguments = func.get("arguments", "{}")
+                calls.append({
+                    "id": call_id,
+                    "operation": func.get("name", ""),
+                    "parameters": strict_json_loads(arguments) if isinstance(arguments, str) else arguments,
+                })
+            call_json = escape_tool_control_markers(json.dumps({"calls": calls}, ensure_ascii=False))
+            historical = f"{ACTION_OPEN_MARKER}{call_json}{ACTION_CLOSE_MARKER}"
+            new_messages.append({
+                "role": "assistant",
+                "content": merge_content(normalize_content(msg.get("content", "")), historical),
+            })
 
         else:
             normalized = normalize_message_content(msg)
             if role == "user":
                 normalized["content"] = _escape_tool_content(normalized["content"])
             new_messages.append(normalized)
+    return new_messages
+
+
+def inject_tool_prompt(messages, tools, tool_choice=None, parallel_tool_calls=True):
+    tool_prompt = TOOL_SYSTEM_PROMPT.format(tool_definitions=format_tool_definitions(tools))
+    if tool_choice == "required":
+        tool_prompt += TOOL_CHOICE_REQUIRED_PROMPT
+    elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+        tool_prompt += TOOL_CHOICE_SPECIFIC_PROMPT.format(name=tool_choice["function"]["name"])
+    elif tool_choice == "none":
+        tool_prompt = "Tools are disabled for this response. Answer normally; do not request any operation."
+    if not parallel_tool_calls:
+        tool_prompt += "\nRequest at most one operation in this response; wait for its result before another call."
+    new_messages = normalize_tool_history(messages)
 
     for index in range(len(new_messages) - 1, -1, -1):
         if new_messages[index].get("role") == "user":

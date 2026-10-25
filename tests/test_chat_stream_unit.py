@@ -1,8 +1,8 @@
 import json
+import threading
 
 from provider import genai
-from provider.genai import stream_genai_response, stream_genai_response_with_tools
-from tools.parsing import extract_tool_calls
+from provider.genai import stream_genai_response
 
 
 class DummyTokenManager:
@@ -22,7 +22,7 @@ def _fake_response(chunks):
         status_code = 200
         text = ""
 
-        def iter_lines(self):
+        def iter_lines(self, **kwargs):
             for chunk in chunks:
                 yield ("data: " + json.dumps(chunk)).encode()
         def close(self):
@@ -77,9 +77,9 @@ def test_stream_genai_response_with_tools_keeps_reasoning_and_tool_calls(monkeyp
         {"choices": [{"delta": {}, "finish_reason": "stop"}]},
     ])
 
-    chunks = _data_chunks(stream_genai_response_with_tools(
+    chunks = _data_chunks(stream_genai_response(
         "跑一下", [{"role": "user", "content": "跑一下"}], "chatglm", 100,
-        DummyConfig(), allowed_tool_names={"Bash"},
+        DummyConfig(), tools=[{"type": "function", "function": {"name": "Bash", "parameters": {"type": "object"}}}],
     ))
 
     reasoning = "".join(
@@ -105,20 +105,6 @@ def test_stream_genai_response_with_tools_keeps_reasoning_and_tool_calls(monkeyp
     )
 
 
-def test_extract_tool_calls_normalizes_string_arguments_to_json_object():
-    tool_calls, _ = extract_tool_calls(
-        '<tool_call>{"name": "Read", "arguments": "README.md"}</tool_call>',
-        allowed_tool_names={"Read"},
-    )
-    assert json.loads(tool_calls[0]["function"]["arguments"]) == {"arguments": "README.md"}
-
-
-def test_extract_tool_calls_maps_bare_bash_string_to_command():
-    tool_calls, _ = extract_tool_calls(
-        '<tool_call>{"name": "Bash", "arguments": "pwd"}</tool_call>',
-        allowed_tool_names={"Bash"},
-    )
-    assert json.loads(tool_calls[0]["function"]["arguments"]) == {"command": "pwd"}
 
 
 def test_upstream_stream_without_finish_or_done_is_an_error(monkeypatch):
@@ -126,7 +112,7 @@ def test_upstream_stream_without_finish_or_done_is_an_error(monkeypatch):
         status_code = 200
         text = ""
 
-        def iter_lines(self):
+        def iter_lines(self, **kwargs):
             yield ("data: " + json.dumps({
                 "choices": [{"delta": {"content": "partial"}, "finish_reason": None}]
             })).encode()
@@ -141,3 +127,98 @@ def test_upstream_stream_without_finish_or_done_is_an_error(monkeypatch):
 
     assert [event["type"] for event in events] == ["delta", "error"]
     assert events[-1]["message"] == "Upstream stream ended before completion"
+
+
+def test_chat_first_role_precedes_upstream_request(monkeypatch):
+    requested = []
+    monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: requested.append(True))
+    stream = stream_genai_response("hi", [{"role": "user", "content": "hi"}], "chatglm", 100, DummyConfig())
+    first = next(stream)
+    assert json.loads(first[6:])["choices"][0]["delta"]["role"] == "assistant"
+    assert requested == []
+    stream.close()
+
+
+def test_native_fragments_preserve_id_and_argument_bytes(monkeypatch):
+    arguments = '{ "command": "echo @@ACTION@@ <think>literal</think> 雪" }'
+    _patch_upstream(monkeypatch, [
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_native", "type": "function",
+            "function": {"name": "Ba", "arguments": arguments[:15]}}]}, "finish_reason": None}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0,
+            "function": {"name": "sh", "arguments": arguments[15:]}}]}, "finish_reason": None}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ])
+    chunks = _data_chunks(stream_genai_response(
+        "run", [{"role": "user", "content": "run"}], "chatglm", 100, DummyConfig(),
+        tools=[{"type": "function", "function": {"name": "Bash", "parameters": {"type": "object"}}}],
+    ))
+    calls = [call for chunk in chunks for call in chunk.get("choices", [{}])[0].get("delta", {}).get("tool_calls", [])]
+    assert calls == [{"index": 0, "id": "call_native", "type": "function",
+                      "function": {"name": "Bash", "arguments": arguments}}]
+    assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_waiting_stream_sends_heartbeat_and_close_releases_http_response(monkeypatch):
+    released = threading.Event()
+    producer_stopped = threading.Event()
+
+    class BlockingResponse:
+        status_code = 200
+        text = ""
+
+        def iter_lines(self, **kwargs):
+            try:
+                released.wait(2)
+                yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            finally:
+                producer_stopped.set()
+
+        def close(self):
+            released.set()
+
+    monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
+    monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: BlockingResponse())
+    heartbeat = genai.heartbeat_events
+    monkeypatch.setattr(genai, "heartbeat_events", lambda factory: heartbeat(factory, interval=0.01))
+    stream = stream_genai_response("hi", [{"role": "user", "content": "hi"}], "chatglm", 100, DummyConfig())
+    assert '"role": "assistant"' in next(stream)
+    assert next(stream) == ": keep-alive\n\n"
+    assert not released.is_set()
+    stream.close()
+    assert released.is_set()
+    assert producer_stopped.wait(1)
+
+
+def test_native_call_not_emitted_until_upstream_completion(monkeypatch):
+    completed = []
+
+    def source(*args, **kwargs):
+        yield {"type": "delta", "content": "safe prose"}
+        assert not completed
+        completed.append(True)
+        yield {"type": "done", "finish_reason": "tool_calls", "tool_calls": [{
+            "id": "call_waited", "type": "function", "function": {"name": "Bash", "arguments": '{"command":"pwd"}'},
+        }]}
+
+    monkeypatch.setattr(genai, "iter_genai_stream", source)
+    stream = stream_genai_response("run", [{"role": "user", "content": "run"}], "chatglm", 100, DummyConfig(),
+        tools=[{"type": "function", "function": {"name": "Bash", "parameters": {"type": "object"}}}])
+    assert '"role": "assistant"' in next(stream)
+    assert "safe prose" in next(stream)
+    assert completed == []
+    assert "call_waited" in next(stream)
+    assert completed == [True]
+    stream.close()
+
+
+def test_no_tools_keeps_action_text_for_explicit_text_mode(monkeypatch):
+    content = '@@ACTION@@{"calls":[{"operation":"echo","parameters":{"text":"literal"}}]}@@END_ACTION@@'
+    _patch_upstream(monkeypatch, [
+        {"choices": [{"delta": {"content": content[:17]}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": content[17:]}, "finish_reason": None}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ])
+    events = _data_chunks(stream_genai_response("hi", [{"role": "user", "content": "hi"}], "chatglm", 1000, DummyConfig()))
+    assert "".join(event["choices"][0]["delta"].get("content", "") for event in events) == content
+    assert not any(event["choices"][0]["delta"].get("tool_calls") for event in events)
+    assert events[-1]["choices"][0]["finish_reason"] == "stop"

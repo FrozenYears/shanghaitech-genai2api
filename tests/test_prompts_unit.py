@@ -1,10 +1,9 @@
 import json
 
-from provider.genai import convert_messages_to_genai_format, estimate_text_tokens
+from provider.genai import convert_messages_to_genai_format
 from tools.parsing import extract_tool_calls
 from tools.prompts import (
     escape_tool_control_markers,
-    format_tool_examples,
     flatten_message_content,
     inject_tool_prompt,
     normalize_message_content,
@@ -53,26 +52,6 @@ def test_inject_tool_prompt_accepts_block_content():
     user_text = flatten_message_content(result[1]["content"])
     assert "Hello" in user_text
     assert '"name":"echo"' in user_text
-
-
-def test_inject_tool_prompt_includes_claude_code_tool_examples():
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "Grep",
-                "description": "Search files",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }
-    ]
-
-    result = inject_tool_prompt([{"role": "user", "content": "search"}], tools)
-
-    user_text = flatten_message_content(result[0]["content"])
-    assert '"operation":"Grep"' in user_text
-    assert '"pattern":"search text"' in user_text
-    assert "@@ACTION@@" in user_text
 
 
 def test_tool_prompt_is_attached_to_current_user_without_losing_context_or_attachments():
@@ -125,10 +104,6 @@ def test_control_marker_text_survives_prompt_escape_and_json_tool_parse():
     assert escaped in flatten_message_content(prepared[-1]["content"])
 
 
-def test_format_tool_examples_omits_unknown_tools():
-    assert format_tool_examples(TOOLS) == ""
-
-
 def test_flatten_message_content_handles_nested_blocks():
     content = [
         {"type": "text", "text": "Line 1"},
@@ -179,7 +154,28 @@ def test_convert_messages_to_genai_format_uses_latest_user_block_content():
     assert result == "Latest\nPrompt"
 
 
-def test_estimate_text_tokens_handles_mixed_text():
-    result = estimate_text_tokens("Hello, 世界!")
 
-    assert result == 5
+
+def test_tool_history_ids_keep_out_of_order_results_unambiguous():
+    messages = [
+        {"role": "assistant", "tool_calls": [
+            {"id": "call-a", "function": {"name": "echo", "arguments": '{"text":"A"}'}},
+            {"id": "call-b", "function": {"name": "echo", "arguments": '{"text":"B"}'}},
+        ]},
+        {"role": "tool", "tool_call_id": "call-b", "content": "opaque result 2"},
+        {"role": "tool", "tool_call_id": "call-a", "content": "opaque result 1", "is_error": True},
+        {"role": "user", "content": "Summarize the results"},
+    ]
+    prepared = inject_tool_prompt(messages, TOOLS)
+    historical_calls, _ = extract_tool_calls(prepared[0]["content"], {"echo"})
+    mapping = {
+        call["id"]: json.loads(call["function"]["arguments"])["text"]
+        for call in historical_calls
+    }
+    results = [
+        json.loads(message["content"].split("<tool_result>", 1)[1].split("</tool_result>", 1)[0])
+        for message in prepared[1:3]
+    ]
+    assert [(mapping[result["call_id"]], result["output"], result["is_error"]) for result in results] == [
+        ("B", "opaque result 2", False), ("A", "opaque result 1", True),
+    ]

@@ -20,7 +20,7 @@ class FakeResponse:
     status_code = 200
     text = ""
 
-    def iter_lines(self):
+    def iter_lines(self, **kwargs):
         chunks = [
             {
                 "choices": [
@@ -109,7 +109,7 @@ def test_non_streaming_messages_route_returns_thinking_block(monkeypatch):
         status_code = 200
         text = ""
 
-        def iter_lines(self):
+        def iter_lines(self, **kwargs):
             chunks = [
                 {"choices": [{"delta": {"reasoning_content": "内部推理"}, "finish_reason": None}]},
                 {"choices": [{"delta": {"content": "对外回答"}, "finish_reason": None}]},

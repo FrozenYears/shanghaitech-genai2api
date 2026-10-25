@@ -24,4 +24,4 @@ def make_error_chunk(message):
     不能把错误文本塞进 delta.content：那样客户端会把它当成模型正常输出。
     """
     error = {"error": {"message": message, "type": "upstream_error", "code": None}}
-    return f"data: {json.dumps(error, ensure_ascii=False)}\n\ndata: [DONE]\n\n"
+    return f"data: {json.dumps(error, ensure_ascii=False)}\n\n"

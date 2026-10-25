@@ -1,7 +1,6 @@
 import json
 import logging
 import re
-import time
 import uuid
 from datetime import datetime
 
@@ -10,7 +9,8 @@ import requests
 from config import GENAI_URL, build_genai_headers, model_registry
 from errors import UpstreamError, make_error_chunk
 from provider.features import search_sources
-from tools.parsing import ToolCallParseError, action_call_prefix_len, extract_tool_calls, find_tool_call_open, tool_call_prefix_len
+from tools.contracts import strict_json_loads
+from provider.streaming import heartbeat_events, validated_events
 from tools.prompts import flatten_message_content, normalize_message_content
 
 logger = logging.getLogger(__name__)
@@ -56,27 +56,6 @@ def estimate_messages_tokens(messages):
     )
 
 
-def log_stream_metrics(model, started_at, first_token_at, content_text, reasoning_text):
-    total_elapsed = max(time.monotonic() - started_at, 1e-6)
-    content_tokens = estimate_text_tokens(content_text)
-    reasoning_tokens = estimate_text_tokens(reasoning_text)
-    total_tokens = content_tokens + reasoning_tokens
-
-    extra = ""
-    if first_token_at is not None:
-        ttft_ms = (first_token_at - started_at) * 1000
-        extra = f" ttft_ms={ttft_ms:.0f}"
-
-    logger.info(
-        "stream metrics model=%s est_tokens=%d content_est=%d reasoning_est=%d toks_per_s=%.2f%s",
-        model,
-        total_tokens,
-        content_tokens,
-        reasoning_tokens,
-        total_tokens / total_elapsed,
-        extra,
-    )
-
 
 def split_history_messages(messages):
     """规范化历史消息，并移除最后一条 user（它已经作为 chatInfo 传入）。"""
@@ -89,13 +68,15 @@ def split_history_messages(messages):
 
 
 def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token=None, upstream_options=None):
-    """统一的上游 GenAI 流迭代器，供 Chat / Anthropic / Responses 三个适配层共用。
+    """增量正文/思考；done 携带完整原生 tool_calls，错误时不交付调用。"""
+    yield from heartbeat_events(lambda control: _iter_genai_stream(
+        chat_info, history_messages, model, max_tokens, config, token, upstream_options, control,
+    ))
 
-    依次产出：
-        {"type": "delta", "content": str|None, "reasoning": str|None}
-        {"type": "done", "finish_reason": str|None}
-        {"type": "error", "message": str}
-    """
+
+def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token, upstream_options, control):
+    if control.cancelled.is_set():
+        return
     token = token or config.token_manager.get_token()
     root_ai_type = model_registry.get_root_ai_type(model, token)
     headers = build_genai_headers(token)
@@ -119,16 +100,22 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
 
     response = None
     try:
+        if control.cancelled.is_set():
+            return
         response = requests.post(
             GENAI_URL,
             headers=headers,
             json=genai_data,
             stream=True,
-            timeout=UPSTREAM_TIMEOUT,
+            timeout=(10, UPSTREAM_TIMEOUT),
         )
+        if not control.attach(response):
+            return
 
         if response.status_code == 401:
             new_token = config.token_manager.force_refresh()
+            if control.cancelled.is_set():
+                return
             if new_token:
                 logger.info("Token refreshed after 401, retrying request")
                 headers = build_genai_headers(new_token)
@@ -136,8 +123,10 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
                 response.close()
                 response = requests.post(
                     GENAI_URL, headers=headers, json=genai_data, stream=True,
-                    timeout=UPSTREAM_TIMEOUT,
+                    timeout=(10, UPSTREAM_TIMEOUT),
                 )
+                if not control.attach(response):
+                    return
 
         if response.status_code != 200:
             logger.warning("GenAI API error %d: %s", response.status_code, response.text[:500])
@@ -153,7 +142,10 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
         emitted_tokens = 0
         truncated = False
         stream_ended = False
-        for line in response.iter_lines():
+        native_calls = {}
+        for line in response.iter_lines(chunk_size=1):
+            if control.cancelled.is_set():
+                return
             if not line:
                 continue
 
@@ -177,8 +169,8 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
                     continue
 
             try:
-                genai_json = json.loads(line_str)
-            except json.JSONDecodeError:
+                genai_json = strict_json_loads(line_str)
+            except ValueError:
                 # 上游有时直接在 SSE 通道里写纯文本错误（worker 不可用时就是一行
                 # "No available workers (all circuits open or unhealthy)"）。以前这里
                 # 只记 debug 日志然后跳过，结果把“上游不可用”伪装成 HTTP 200 空回复。
@@ -206,6 +198,34 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
             choices = genai_json.get("choices") or []
             if not choices:
                 continue
+            delta = choices[0].get("delta") or {}
+            for fragment in delta.get("tool_calls") or []:
+                index = fragment.get("index")
+                if type(index) is not int or index < 0:
+                    raise ValueError("Native tool call has an invalid index")
+                call = native_calls.get(index)
+                if call is None:
+                    call = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                    native_calls[index] = call
+                if fragment.get("type", "function") != "function":
+                    raise ValueError("Unsupported native tool call type")
+                value = fragment.get("id")
+                if value is not None:
+                    if not isinstance(value, str):
+                        raise ValueError("Invalid native tool call ID")
+                    call["id"] += value
+                function = fragment.get("function") or {}
+                for key in ("name", "arguments"):
+                    value = function.get(key)
+                    if value is not None:
+                        if not isinstance(value, str):
+                            raise ValueError("Invalid native tool call fragment")
+                        call["function"][key] += value
+                        emitted_tokens += estimate_text_tokens(value)
+            if max_tokens and emitted_tokens >= max_tokens:
+                truncated = True
+                stream_ended = True
+                break
 
             content, reasoning = extract_content_from_genai(genai_json)
             if content or reasoning:
@@ -225,6 +245,21 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
         if not stream_ended:
             yield {"type": "error", "message": "Upstream stream ended before completion"}
             return
+        calls = [native_calls[index] for index in sorted(native_calls)]
+        if calls:
+            if truncated or finish_reason == "length":
+                raise ValueError("Native tool call output was truncated")
+            if finish_reason not in ("tool_calls", "stop"):
+                raise ValueError("Native tool calls did not complete")
+            if sorted(native_calls) != list(range(len(calls))):
+                raise ValueError("Native tool call indices are incomplete")
+            for call in calls:
+                if not call["id"] or not call["function"]["name"]:
+                    raise ValueError("Native tool call is incomplete")
+                if not isinstance(strict_json_loads(call["function"]["arguments"]), dict):
+                    raise ValueError("Native tool call arguments must be an object")
+        if control.cancelled.is_set():
+            return
         if genai_data.get("netGo") and not truncated:
             try:
                 sources = search_sources(genai_data, token)
@@ -240,10 +275,10 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
                         kept.append(source_line)
                     sources = "".join(kept)
                 if sources:
-                    yield {"type": "delta", "content": sources, "reasoning": None}
+                    yield {"type": "delta", "content": sources, "reasoning": None, "sources": True}
             except (requests.RequestException, UpstreamError, ValueError):
                 logger.warning("补充检索列表获取失败；保留已返回的正文引用", exc_info=True)
-        yield {"type": "done", "finish_reason": "length" if truncated else finish_reason}
+        yield {"type": "done", "finish_reason": "length" if truncated else finish_reason, "tool_calls": calls}
 
     except Exception as e:
         logger.exception("Error in iter_genai_stream")
@@ -253,16 +288,16 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
             response.close()
 
 
-def collect_genai_response(chat_info, messages, model, max_tokens, config, upstream_options=None):
-    """非流式收集上游输出，返回 (content, reasoning, finish_reason)。
-
-    上游错误直接抛 UpstreamError，不能像以前那样解析 SSE 失败就丢掉。
-    """
+def collect_genai_response(chat_info, messages, model, max_tokens, config, upstream_options=None,
+                           tools=None, tool_choice=None, parallel_tool_calls=True):
+    """收集已校验输出，返回正文、思考、结束原因和完整调用。"""
     content_parts = []
     reasoning_parts = []
     finish_reason = None
+    tool_calls = []
     history = split_history_messages(messages)
-    for event in iter_genai_stream(chat_info, history, model, max_tokens, config, upstream_options=upstream_options):
+    source = iter_genai_stream(chat_info, history, model, max_tokens, config, upstream_options=upstream_options)
+    for event in validated_events(source, tools, tool_choice, parallel_tool_calls):
         if event["type"] == "error":
             raise UpstreamError(event["message"])
         if event["type"] == "delta":
@@ -272,7 +307,8 @@ def collect_genai_response(chat_info, messages, model, max_tokens, config, upstr
                 reasoning_parts.append(event["reasoning"])
         elif event["type"] == "done":
             finish_reason = event.get("finish_reason")
-    return "".join(content_parts), "".join(reasoning_parts), finish_reason
+            tool_calls = event.get("tool_calls", [])
+    return "".join(content_parts), "".join(reasoning_parts), finish_reason, tool_calls
 
 
 def _chat_finish_reason(upstream_reason):
@@ -280,236 +316,52 @@ def _chat_finish_reason(upstream_reason):
     return "length" if upstream_reason == "length" else "stop"
 
 
-def stream_genai_response(chat_info, messages, model, max_tokens, config, upstream_options=None):
-    """OpenAI Chat Completions 兼容的流式响应。"""
-    started_at = time.monotonic()
-    first_token_at = None
-    content_parts = []
-    reasoning_parts = []
+def stream_genai_response(chat_info, messages, model, max_tokens, config, upstream_options=None,
+                          tools=None, tool_choice=None, parallel_tool_calls=True):
+    """Chat 流先发角色，安全正文实时交付，工具整批校验后交付。"""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(datetime.now().timestamp())
-    sent_role = False
     prompt_tokens = estimate_messages_tokens(messages)
+    output_tokens = 0
 
-    def make_chunk(delta, finish_reason=None, usage=None):
-        chunk = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    def chunk(delta, finish_reason=None, usage=None):
+        value = {
+            "id": completion_id, "object": "chat.completion.chunk", "created": created,
+            "model": model, "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
         if usage is not None:
-            chunk["usage"] = usage
-        return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            value["usage"] = usage
+        return f"data: {json.dumps(value, ensure_ascii=False)}\n\n"
 
-    def emit(delta):
-        nonlocal sent_role
-        if not sent_role:
-            delta = {"role": "assistant", **delta}
-            sent_role = True
-        return make_chunk(delta)
-
-    history = split_history_messages(messages)
-
-    for event in iter_genai_stream(chat_info, history, model, max_tokens, config, upstream_options=upstream_options):
-        if event["type"] == "error":
-            yield make_error_chunk(event["message"])
-            return
-
-        if event["type"] == "delta":
-            if first_token_at is None:
-                first_token_at = time.monotonic()
-            delta = {}
-            if event.get("reasoning"):
-                reasoning_parts.append(event["reasoning"])
-                delta["reasoning_content"] = event["reasoning"]
-            if event.get("content"):
-                content_parts.append(event["content"])
-                delta["content"] = event["content"]
-            if delta:
-                yield emit(delta)
-            continue
-
-        # done
-        log_stream_metrics(
-            model, started_at, first_token_at, "".join(content_parts), "".join(reasoning_parts)
-        )
-        output_tokens = estimate_text_tokens("".join(content_parts) + "".join(reasoning_parts))
-        yield make_chunk({}, finish_reason=_chat_finish_reason(event.get("finish_reason")), usage={
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": output_tokens,
-            "total_tokens": prompt_tokens + output_tokens,
-        })
-        yield "data: [DONE]\n\n"
-        return
-
-
-def stream_genai_response_with_tools(
-    chat_info, messages, model, max_tokens, config, allowed_tool_names=None,
-    upstream_options=None, tool_choice_required=False,
-):
-    """带工具调用的 Chat Completions 流式响应。
-
-    上游模型不支持原生 function calling，因此从正文里解析 <tool_call> 标记，
-    再转成 OpenAI 的 tool_calls 增量。
-    """
-    started_at = time.monotonic()
-    first_token_at = None
-    content_parts = []
-    reasoning_parts = []
-    completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-    created = int(datetime.now().timestamp())
-
-    buffer = ""
-    tool_buffer = ""
-    sent_role = False
-    tool_detected = False
-    prompt_tokens = estimate_messages_tokens(messages)
-
-    def make_chunk(delta, finish_reason=None, usage=None):
-        chunk = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
-        }
-        if usage is not None:
-            chunk["usage"] = usage
-        return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-
-    def emit(delta):
-        nonlocal sent_role
-        if not sent_role:
-            delta = {"role": "assistant", **delta}
-            sent_role = True
-        return make_chunk(delta)
-
-    history = split_history_messages(messages)
-
-    for event in iter_genai_stream(chat_info, history, model, max_tokens, config, upstream_options=upstream_options):
-        if event["type"] == "error":
-            yield make_error_chunk(event["message"])
-            return
-
-        if event["type"] == "delta":
-            if first_token_at is None:
-                first_token_at = time.monotonic()
-
-            # 思维链单独成增量，不参与工具标记检测
-            if event.get("reasoning"):
-                reasoning_parts.append(event["reasoning"])
-                yield emit({"reasoning_content": event["reasoning"]})
-
-            content = event.get("content")
-            if not content:
-                continue
-            content_parts.append(content)
-
-            if tool_detected:
-                tool_buffer += content
-                continue
-
-            buffer += content
-
-            tag_pos = find_tool_call_open(buffer)
-            if tag_pos >= 0:
-                pre = buffer[:tag_pos]
-                if pre.strip():
-                    yield emit({"content": pre})
-                tool_detected = True
-                tool_buffer = buffer[tag_pos:]
-                buffer = ""
-                continue
-
-            plen = tool_call_prefix_len(buffer)
-            if plen > 0:
-                safe = buffer[:-plen]
-                if safe:
-                    yield emit({"content": safe})
-                buffer = buffer[-plen:]
-            else:
-                if buffer:
-                    yield emit({"content": buffer})
-                buffer = ""
-            continue
-
-        # done：先冲刷残留文本，再输出工具调用
-        if tool_detected and event.get("finish_reason") == "length":
-            yield make_error_chunk("Tool call output was truncated; no tool call was emitted")
-            return
-
-        if tool_detected:
-            tool_buffer += buffer
-            try:
-                tool_calls, remaining = extract_tool_calls(
-                    tool_buffer, allowed_tool_names=allowed_tool_names
-                )
-            except ToolCallParseError as exc:
-                yield make_error_chunk(str(exc))
+    yield chunk({"role": "assistant", "content": ""})
+    source = iter_genai_stream(chat_info, split_history_messages(messages), model, max_tokens, config,
+                               upstream_options=upstream_options)
+    events = validated_events(source, tools, tool_choice, parallel_tool_calls)
+    try:
+        for event in events:
+            if event["type"] == "heartbeat":
+                yield ": keep-alive\n\n"
+            elif event["type"] == "error":
+                yield make_error_chunk(event["message"])
                 return
-
-            if tool_calls:
-                logger.debug("Streaming tool calling: detected %d tool_call(s)", len(tool_calls))
-                if remaining and remaining.strip():
-                    yield emit({"content": remaining.strip()})
-
-                for index, tool_call in enumerate(tool_calls):
-                    function = tool_call.get("function", {})
-                    # 先发名称与 id，再发参数，贴近原生增量顺序
-                    yield make_chunk({
-                        "tool_calls": [{
-                            "index": index,
-                            "id": tool_call.get("id"),
-                            "type": "function",
-                            "function": {"name": function.get("name"), "arguments": ""},
-                        }]
-                    })
-                    yield make_chunk({
-                        "tool_calls": [{
-                            "index": index,
-                            "function": {"arguments": function.get("arguments", "{}")},
-                        }]
-                    })
-
-                log_stream_metrics(
-                    model, started_at, first_token_at,
-                    "".join(content_parts), "".join(reasoning_parts),
-                )
-                yield make_chunk({}, finish_reason="tool_calls")
+            elif event["type"] == "delta":
+                delta = {}
+                if event.get("content"):
+                    delta["content"] = event["content"]
+                if event.get("reasoning"):
+                    delta["reasoning_content"] = event["reasoning"]
+                output_tokens += sum(estimate_text_tokens(value) for value in delta.values())
+                if delta:
+                    yield chunk(delta)
+            elif event["type"] == "done":
+                calls = event["tool_calls"]
+                for index, call in enumerate(calls):
+                    yield chunk({"tool_calls": [{"index": index, **call}]})
+                yield chunk({}, "tool_calls" if calls else _chat_finish_reason(event.get("finish_reason")), {
+                    "prompt_tokens": prompt_tokens, "completion_tokens": output_tokens,
+                    "total_tokens": prompt_tokens + output_tokens,
+                })
                 yield "data: [DONE]\n\n"
                 return
-
-            if tool_choice_required:
-                yield make_error_chunk("Required tool call was not returned; no action was emitted")
-                return
-            logger.warning("Tool tag detected but parsing failed — emitting as text")
-            yield emit({"content": remaining if remaining is not None else tool_buffer})
-            yield make_chunk({}, finish_reason=_chat_finish_reason(event.get("finish_reason")))
-            yield "data: [DONE]\n\n"
-            return
-
-        if action_call_prefix_len(buffer):
-            yield make_error_chunk("Action envelope marker was truncated; no action was emitted")
-            return
-        if tool_choice_required:
-            yield make_error_chunk("Required tool call was not returned; no action was emitted")
-            return
-        if buffer:
-            yield emit({"content": buffer})
-        if not sent_role:
-            yield emit({"content": ""})
-
-        log_stream_metrics(
-            model, started_at, first_token_at,
-            "".join(content_parts), "".join(reasoning_parts),
-        )
-        output_tokens = estimate_text_tokens("".join(content_parts) + "".join(reasoning_parts))
-        yield make_chunk({}, finish_reason=_chat_finish_reason(event.get("finish_reason")), usage={
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": output_tokens,
-            "total_tokens": prompt_tokens + output_tokens,
-        })
-        yield "data: [DONE]\n\n"
-        return
+    finally:
+        events.close()

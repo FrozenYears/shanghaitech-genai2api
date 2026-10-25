@@ -112,9 +112,9 @@ wire_api = "responses"
 ## 特性
 
 - **Claude Code 兼容** — 提供 Anthropic Messages API，支持 `tool_use/tool_result` 转换与扩展思考（thinking）块，可直接接入 Claude Code
-- **Codex CLI 兼容** — 提供 OpenAI Responses API，支持 `function_call`、`custom_tool_call`（如 apply_patch）与 reasoning summary 事件
+- **Responses 兼容** — 提供 `function_call`、custom text 工具与 reasoning summary 事件；支持工具 namespace。custom grammar 不支持并明确返回 400，使用该格式的 Codex 配置需要改用兼容工具声明或原生供应商接口。
 - **OpenAI 兼容** — 同时提供 OpenAI Chat Completion API，支持 Cursor、Continue 等客户端
-- **Tool Calling** — 当前轮 user 消息携带 JSON Schema 与 `@@ACTION@@...@@END_ACTION@@` 文本协议；代理转为三个客户端协议的工具调用，工具仍由客户端执行。会保留参数内的控制标记文本，并拒绝损坏、截断或不符合必需 `tool_choice` 的调用
+- **工具调用原生优先** — 保留上游结构化 `tool_calls`；没有结构化调用时，严格解析 Kimi XTML、DeepSeek DSML、完整 XML 或 action 封套。三种 API 共用 JSON Schema、工具选择及并行约束，整批校验通过才交付，工具仍由客户端执行。
 - **思维链透传** — 上游 `reasoning_content` 在三个接口里分别以 `reasoning_content`、thinking 块、reasoning 事件输出
 - **自动登录与刷新** — 学号密码模式通过 CAS 自动登录，JWT 过期静默刷新
 - **动态模型列表** — 自动从 GenAI 平台拉取可用模型，`/v1/models` 额外返回图片、文档、搜索、思考开关的 `capabilities`
@@ -211,25 +211,35 @@ Pi 0.85.1 屏蔽用户插件后的真实验证见 [PI_REAL_WORLD_VALIDATION.md](
 
 进一步的 33 KB 全文复制、约 320 KB 源码局部编辑、12 阶段持续开发及 11 类工具（搜索、命令、SQLite、HTTP、后台任务等）验证见 [长时多工具报告](TEST_REPORT_deepseek_pro.md#长文件持续开发与多类型工具补充验证) 和 [证据摘要](validation/kimi-endurance-2026-10-24.json)。Kimi 原生 K3 XTML 调用现在由第一跳严格解析并转换为三种 API 的工具事件，不再只作为正文结束。现有长文件优先局部 edit，代码需真实运行检查，文件内容需独立回读／哈希核验；代理解析正确不保证模型复制内容正确。
 
+## 原生优先与流式链路
+
+第一跳仍连接学校网页聊天端点：工具定义和历史通过网页可接受的文本表达，历史调用保留 ID，结果按 ID 关联。支持提取原生输出不等于网页已开放原生 function API；将 `tools/tool_choice` 直接添加到网页请求的两次短探针，DeepSeek 和 Kimi 都回答 `NO_TOOL`，未返回结构化工具字段。
+
+第二跳 `genai2agent-relay` 默认 `UPSTREAM_TOOL_MODE=native`：向第一跳发送结构化工具定义、角色与历史，消费第一跳的结构化 SSE。不会再次把已经解析的工具调用降成文本，也不会在失败后自动改用文本重放。只有显式设置 `UPSTREAM_TOOL_MODE=text` 才使用普通文本封套；代码示例不触发执行或纠错执行。两个仓库需要一起升级。
+
+学校另有独立 API。图书信息中心的 [GenAI API 接入 OpenClaw 指南](https://aiplat.shanghaitech.edu.cn/_upload/article/files/9e/52/e8e9d4574a4386cb0ccf1614b548/fe158a03-d45e-41db-a895-d3400cf328bf.pdf) 给出的 base URL 示例为 `https://genaiapi.shanghaitech.edu.cn/api/v1/start`，要求单独的个人 API Key 和网络授权。取得授权后，可将 relay 的 `UPSTREAM_BASE_URL` 指向实际获批的 API base，跳过网页第一跳；不要把网页登录 JWT 或学号密码发送给该地址。当前未用学校 API Key 验证这条直连路径，模型 ID 也不能沿用网页名称猜测。
+
+流式请求先发送协议开始事件，再持续交付安全正文和独立思考增量；第一跳等待上游时每 10 秒发送心跳，relay 转发上游心跳。工具参数在完整响应结束、JSON/Schema/choice 校验后交付，不提前执行半截参数。流中错误不再发送成功结束事件。断开后关闭上游响应并中断读取；尚未取得响应头的连接阶段只能在请求返回或超时后清理，不能承诺立即取消远端推理。
+
 ## 已知限制
 
 - **令牌过期的恢复仍有缺口**：模型元数据与文档上传阶段遇到失效令牌时，实际观察到 HTTP 500 或流中断，尚未统一恢复与正确传播错误。本轮重启服务恢复了登录状态，详见 Pi 验证报告。
 - **模型名完全透传**：请求里的 `model` 会直接作为 GenAI 平台的 `aiType` 发送，不做任何映射。请填写平台真实存在的模型 id。
-- **无服务端会话状态**：Responses API 不支持 `previous_response_id`，也不做 response storage。客户端需要每轮发送完整历史（Codex 的 `disable_response_storage = true` 正好符合）。
-- **Responses API 是兼容子集**：实现了 Codex / OpenAI Agents SDK 实际使用的 message、function_call、custom_tool_call、reasoning 与文本 delta 事件；web_search 声明会启用 GenAI 网页搜索，但不伪造原生托管工具事件，mcp、image_generation 等托管工具事件未实现。`response.completed` 会回显请求的 `tools` / `tool_choice` / `store` 等字段，但超出上下文上限时发出的是 `response.incomplete`。
+- **无服务端会话状态**：Responses 的 `previous_response_id`、`item_reference`、`store=true` 等不能在本代理恢复状态，明确返回 400。客户端必须每轮发送完整历史。
+- **Responses API 是兼容子集**：支持 message、function_call、custom text、namespace、reasoning 与流式文本事件；custom grammar、未实现的托管工具类型不会静默忽略，而是报错。web_search 仍只映射为网页搜索，不冒充原生托管事件。普通文本长度截断返回 `response.incomplete`；工具截断返回错误且不交付调用。
 - **Anthropic thinking 签名是占位值**：上游 GenAI 没有 Anthropic 意义上的签名，代理返回 `genai-compat-no-signature`。历史里的 thinking 块会被忽略，不会转发给上游。
 - **图片以内联方式发送**：base64 图片会以 data URL 随请求体一并发送，体积约为原图的 4/3，因此大图会拉长请求体；代理不再调用网页的图片服务，也就不依赖任何前端令牌。只验证过 PNG，其他格式由平台侧解析能力决定。
 - **只有独立 reasoning 字段会被结构化透传**：`reasoning` / `reasoning_content` 会映射到客户端思考字段。上游若把分析写成未标记正文，代理不会猜测其类别。Anthropic 输出路径会过滤正文 `<think>...</think>` 标签；不使用网页历史中的标签内容来伪造实时思考。
 - **思考内容由上游决定，且不保证返回**：deepseek-pro 在 Pi 这类大提示词下（约 2.2 万 token，含 24 个工具 schema）经常完全不发 `reasoning_content`；换成等长的中性提示词则稳定返回。这不是代理丢字段，代理也不会补造。重复同一问题还会命中平台缓存，直接返回旧答案且不带思考。
 - **重复相同问题会命中平台缓存**：同一 `model` 与相同问题重复请求时，平台会在几十毫秒内直接返回上次答案，且不带任何思考增量。想观察思考应以新提问验证；不能据此认为模型不再推理。
 - **部分模型关闭思考后仍把分析写进正文**：GLM 在 `thinking: false` 时，正文会以未标记的英文分析开头（例如 `The user wants me to…`）；同模型开启思考后思考字段与正文均正常。DeepSeek 关闭思考后正文保持干净。这是模型侧行为，代理不猜测哪些句子属于分析，也不事后改写成思考。
-- **工具调用由文本协议承载，不是平台原生函数接口**：主提示使用 `@@ACTION@@` JSON envelope；第一跳同时解析完整 Kimi K3 XTML typed tools 通道、既有 `<tool_call>` 和 DSML。未知、截断或无法无损解析的调用不交付。用户数据中的控制标记以 JSON Unicode 转义传给模型，工具参数解析时恢复。模型仍可能复制错误；必需调用缺失会报错，结果需实际验证。
-- **`tool_choice` 指定单个函数会收窄允许集合**：Chat 的 `{"type":"function",...}`、Anthropic 的 `{"type":"tool"}` 会让代理只透传该工具的调用，其它工具调用被丢弃；这只是代理层过滤 + prompt 约束，不是模型原生能力。
+- **网页工具通道不是官方原生函数接口**：文本提示仍使用 action 封套，原生结构化输出优先于文本解析。仅接受明确闭合的协议，不再从裸 JSON、函数样式或 Markdown 示例猜测调用，不修补引号、不猜参数名或类型。重复键、非有限数、多封套、非法成员或截断均拒绝；Schema 不进行外部网络引用解析。Schema 合法仍不能证明模型复制内容正确。
+- **工具选择与并行约束由代理执行**：`none`、`required`、指定函数、`parallel_tool_calls=false`（含 Anthropic `disable_parallel_tool_use`）在交付前统一校验，违反约束整批拒绝，不再删除非法成员后交付剩余部分。这是代理验收，不是生成端 constrained decoding。
 - **输出长度由代理本地强制**：上游不执行 `maxToken`，代理按估算 token 在本地截断，普通文本截断时 Chat 的 `finish_reason` 与 Anthropic 的 `stop_reason` 会分别返回 `length` / `max_tokens`，Responses 发出 `response.incomplete`；若截断命中工具调用，则不发出工具调用并返回错误。预算包含思维链 token，因此对推理模型给很小的 `max_tokens` 时可能只产出思维链、正文为空。
 - **usage 是本地估算**：`prompt_tokens` / `input_tokens` / `completion_tokens` 均由代理按文本估算，不是上游真实计费值。
 - **思考支持开关，不支持档位或精确预算**：客户端推理参数映射为上游 `thinking` 布尔值。模型标为不提供开关、额度不足或上游未返回思考字段时，代理不会补造思考内容。`/v1/models` 的 `capabilities` 来自平台配置，不代表已逐模型保证所有组合都可用。
-- **上游超时与错误传播**：上游单次请求超时为 300 秒；大 prompt（数十万 token）首 token 仍可能超时，此时流式接口返回标准 `error` 事件（HTTP 仍为 200），非流式接口返回 HTTP 502 与 `{"error": {...}}`。上游即使用 HTTP 200 + SSE 返回纯文本错误（如 worker 不可用时的 `No available workers (all circuits open or unhealthy)`），或未给完成标记就提前结束，也会按同样方式上报，不再表现为空回复。
-- **兼容 GenAI 原生 DSML 标记**：部分模型会自行输出 `<｜DSML｜tool_call>`、`<｜DSML｜call>`、`<｜DSML｜_call>`、`<｜DSML｜ name="Tool">` 等 DSML 变体，代理会统一归一化为 `<tool_call>` 再解析；完整 JSON 参数中的标记文本按原值保留，不会误删文件内容。
+- **上游超时与错误传播**：连接超时 10 秒，读取超时 300 秒；上游错误、提前 EOF 或损坏调用以流式 `error` / 非流式 502 返回，不把错误当正文，不发送成功完成标记。已交付正文后不自动重放请求。
+- **DeepSeek DSML 与 Kimi XTML**：支持明确闭合的 DeepSeek `invoke/parameter`（字符串原样保留、非字符串严格 JSON 解码）、既有 DSML call 变体以及 Kimi typed tools 通道；不补齐缺失标签。代码引用与 `<think>` 内的工具示例不是操作。
 
 ## 上下文探测工具
 

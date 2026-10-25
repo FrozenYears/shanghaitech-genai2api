@@ -1,5 +1,40 @@
 # deepseek-pro 反代能力测试报告
 
+## 2026-10-25：原生优先与流式重构验收
+
+分支：根仓库和 relay 均为 `feat/native-first-streaming`。使用新代码在临时 loopback 端口启动真实 HTTP 服务，连接实际 GenAI 网页模型；原 31100/31110 未重启。下面的“native relay”指 relay 与第一跳之间的结构化工具协议，不代表网页端点已接受原生工具定义。
+
+### 回归与实际工作流
+
+| 范围 | 验收结果 |
+| --- | --- |
+| 根项目 `pixi run test -q -p no:cacheprovider` | 275 passed |
+| relay，使用根项目 pixi Python 执行 pytest | 79 passed，164 subtests passed |
+| native relay：DeepSeek / Kimi × Chat / Messages / Responses | 6 条实际文件工作流通过 |
+| 第一跳直连：DeepSeek Chat，两模型 Messages / Responses | 5 条实际文件工作流通过 |
+| 显式 text relay：DeepSeek Chat | 1 条实际文件工作流通过 |
+| custom text + namespace | 第一跳 Kimi、relay DeepSeek 均完成真实写入与结果回传后的正常结束 |
+
+每条文件工作流均实际执行 write → edit → read → run_python，5 轮请求后结束；共 48 次工具执行。`demo.py` 保留中文、`<think>`、`</think>` 和 `@@ACTION@@` 字面注释，局部 edit 后由真实 Python 进程验证 `add(2, 3) == 6`，最终磁盘字节均匹配。统一 SHA-256：`6782575cf888073589a1b3ddc539d4a09c5b4d127b0a9b41709fe5a6a3f96810`。
+
+两个 custom 场景分别写入 62 字节，验证 `namespace=workspace`、`name=write_note`、带控制标记和 Unicode 的 input 原文、call_id 关联的 custom_tool_call_output。实际写入并回读后，下一轮 `tool_choice=none` 正常结束，无额外调用。
+
+### 流式与取消
+
+- 修复后 11 条文件工作流的首个非空 SSE 行在 0–32 ms 内收到；这是协议首事件，不是模型首 token，且受本机时钟分辨率影响，不是延迟承诺。
+- 真实慢 HTTP 源的第一段正文约 16 ms 到达，第二段约 219 ms，终态约 406 ms；证明 relay 不是完成后重放正文。
+- 真实 socket 验收收到正文后进入空闲，桥接仍发出 heartbeat；取消后服务端观察到 EOF，`genai-stream` 线程退出。响应头到达前的取消仍受 requests 返回/超时限制。
+- 33 KB 参数逐字符 SSE 分片、原始 wire 超过 1 MiB 的边界由确定性回归覆盖：重复协议元数据不消耗参数预算。未在本轮重新执行旧报告的 33 KB 模型全文复制或 12 阶段耐力测试。
+
+### 失败与边界
+
+首次真实验收中 7 条 native 路径失败，均未交付工具；根因是完整 action 封套末尾的 `@@` 被旧前缀检查误判为截断。删除重复的截断判断、由严格完整解析器负责终态判定后，上述 11 条新工作流全部通过；显式 text 路径在首次验收已通过。另修复了错误流仍追加 `[DONE]`、普通末尾 `@` / `<` 被判截断，以及 text relay 未闭合 `<think>` 内封套被误识别为调用的问题。
+
+本轮未获得学校独立 API Key，未实测 `genaiapi.shanghaitech.edu.cn` 的原生工具接口。公开 OpenClaw 指南证明存在独立授权 API 路径，但不能将网页模型成功推导为该 API 所有工具、签名或约束均支持。custom grammar 明确拒绝；custom text 已实际验证。学校网页的文件/图片/搜索组合没有在本轮重新全面验收。
+
+用户选择删除本轮 3 个临时测试目录及 3 个新模块字节码缓存；保留本报告的结果、哈希、失败原因及边界。先前用户保留的长文件/耐力测试产物不在清理范围。
+
+
 ## 长文件、持续开发与多类型工具补充验证
 
 证据摘要：[validation/kimi-endurance-2026-10-24.json](validation/kimi-endurance-2026-10-24.json)。全部使用真实模型和本地实际执行器；不将 HTTP 200、模型声称完成或部分文件正确作为通过标准。

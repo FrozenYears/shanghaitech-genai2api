@@ -11,7 +11,7 @@ from errors import UpstreamError
 from tools.prompts import flatten_message_content
 from provider.anthropic import (
     COMPAT_THINKING_SIGNATURE,
-    anthropic_allowed_tool_names,
+    anthropic_tools_to_openai_tools,
     anthropic_messages_to_genai_format,
     anthropic_tool_choice_to_openai,
     parse_tool_arguments,
@@ -61,11 +61,9 @@ def messages():
 
         # Convert Anthropic format to GenAI format
         _, genai_messages, model = anthropic_messages_to_genai_format(req_data, token)
-        allowed_tool_names = anthropic_allowed_tool_names(req_data)
+        tools = anthropic_tools_to_openai_tools(req_data.get('tools'))
         mapped_tool_choice = anthropic_tool_choice_to_openai(req_data.get('tool_choice'))
-        required_tool_call = bool(allowed_tool_names) and (
-            mapped_tool_choice == "required" or isinstance(mapped_tool_choice, dict)
-        )
+        parallel_tool_calls = not (req_data.get('tool_choice') or {}).get('disable_parallel_tool_use', False)
 
         if not genai_messages:
             return anthropic_error("No valid messages provided", error_type="invalid_request_error", status=400)
@@ -78,9 +76,9 @@ def messages():
                 max_tokens,
                 token,
                 config,
-                allowed_tool_names=allowed_tool_names,
+                tools=tools, tool_choice=mapped_tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
                 upstream_options=upstream_options,
-                required_tool_call=required_tool_call,
             )
             return Response(
                 stream_with_context(gen),
@@ -105,9 +103,9 @@ def messages():
                 max_tokens,
                 token,
                 config,
-                allowed_tool_names=allowed_tool_names,
+                tools=tools, tool_choice=mapped_tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
                 upstream_options=upstream_options,
-                required_tool_call=required_tool_call,
             ):
                 event = None
                 data = None
@@ -143,12 +141,7 @@ def messages():
                     elif delta.get("type") == "thinking_delta" and delta.get("thinking"):
                         thinking_parts.append(delta["thinking"])
                     elif delta.get("type") == "input_json_delta":
-                        tool = tool_blocks.setdefault(data.get("index", 0), {
-                            "type": "tool_use",
-                            "id": f"toolu_{uuid.uuid4().hex[:24]}",
-                            "name": "tool",
-                            "_partial_json": "",
-                        })
+                        tool = tool_blocks[data["index"]]
                         tool["_partial_json"] += delta.get("partial_json", "")
                 elif event == "message_delta":
                     stop_reason = data.get("delta", {}).get("stop_reason") or stop_reason

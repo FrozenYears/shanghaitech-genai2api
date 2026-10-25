@@ -32,7 +32,7 @@ def _patch_upstream(monkeypatch, content, finish_reason="stop"):
         status_code = 200
         text = ""
 
-        def iter_lines(self):
+        def iter_lines(self, **kwargs):
             split = content.find("<think>")
             split = split if split >= 0 else len(content) // 2
             for fragment in (content[:split], content[split:]):
@@ -268,8 +268,10 @@ def test_streamed_incomplete_action_marker_emits_error(monkeypatch, protocol):
     body = response.get_data(as_text=True)
 
     assert response.status_code == 200
-    assert "Action envelope marker was truncated" in body
     if protocol == "chat":
+        events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+        assert any("error" in event for event in events)
+        assert "[DONE]" not in body
         assert '"tool_calls"' not in body
     elif protocol == "messages":
         assert "event: error" in body
@@ -307,3 +309,239 @@ def test_final_verification_examples_do_not_trigger_streamed_tools(monkeypatch, 
                          if event.get("type") == "response.output_text.delta")
         assert events[-1]["type"] == "response.completed"
     assert actual == content
+
+
+def _patch_native_upstream(monkeypatch, arguments, *, name="write", finish="tool_calls", second=False):
+    class NativeResponse:
+        status_code = 200
+        text = ""
+
+        def iter_lines(self, **kwargs):
+            fragments = [
+                {"index": 0, "id": "call_preserved", "type": "function",
+                 "function": {"name": name[:2], "arguments": arguments[:9]}},
+                {"index": 0, "function": {"name": name[2:], "arguments": arguments[9:]}},
+            ]
+            for fragment in fragments:
+                yield ("data: " + json.dumps({"choices": [{"delta": {"tool_calls": [fragment]}, "finish_reason": None}]})).encode()
+            if second:
+                yield ("data: " + json.dumps({"choices": [{"delta": {"tool_calls": [{
+                    "index": 1, "id": "call_second", "type": "function",
+                    "function": {"name": "write", "arguments": arguments},
+                }]}, "finish_reason": None}]})).encode()
+            if finish is not None:
+                yield ("data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": finish}]})).encode()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
+    monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: NativeResponse())
+
+
+def _native_request(protocol, stream, **overrides):
+    parameters = {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                  "required": ["path", "content"], "additionalProperties": False}
+    body = {"model": "chatglm", "stream": stream}
+    if protocol == "chat":
+        path = "/v1/chat/completions"
+        body.update(messages=[{"role": "user", "content": "write"}],
+                    tools=[{"type": "function", "function": {"name": "write", "parameters": parameters}}])
+    elif protocol == "messages":
+        path = "/v1/messages"
+        body.update(messages=[{"role": "user", "content": "write"}],
+                    tools=[{"name": "write", "input_schema": parameters}])
+    else:
+        path = "/v1/responses"
+        body.update(input="write", tools=[{"type": "function", "name": "write", "parameters": parameters}])
+    body.update(overrides)
+    return _app().test_client().post(path, json=body)
+
+
+def _wire_events(response):
+    return [json.loads(line[6:]) for line in response.get_data(as_text=True).splitlines()
+            if line.startswith("data: ") and line[6:] != "[DONE]"]
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_native_fragments_preserve_calls_through_all_protocols(monkeypatch, protocol, stream):
+    arguments = '{ "path": "雪.txt", "content": "@@ACTION@@ <think>literal</think> </tool_call>" }'
+    _patch_native_upstream(monkeypatch, arguments)
+    response = _native_request(protocol, stream)
+    assert response.status_code == 200
+    if not stream:
+        data = response.get_json()
+        if protocol == "chat":
+            call = data["choices"][0]["message"]["tool_calls"][0]
+            assert call["id"] == "call_preserved"
+            assert call["function"]["arguments"] == arguments
+        elif protocol == "messages":
+            call = next(block for block in data["content"] if block["type"] == "tool_use")
+            assert call["id"] == "call_preserved"
+            assert call["input"] == json.loads(arguments)
+        else:
+            call = next(item for item in data["output"] if item["type"] == "function_call")
+            assert call["call_id"] == "call_preserved"
+            assert call["arguments"] == arguments
+        return
+    events = _wire_events(response)
+    assert not any("error" in event for event in events)
+    if protocol == "chat":
+        calls = [call for event in events for call in event["choices"][0]["delta"].get("tool_calls", [])]
+        assert calls[0]["id"] == "call_preserved"
+        assert "".join(call["function"].get("arguments", "") for call in calls) == arguments
+    elif protocol == "messages":
+        block = next(event["content_block"] for event in events
+                     if event.get("content_block", {}).get("type") == "tool_use")
+        assert block["id"] == "call_preserved"
+        assert "".join(event.get("delta", {}).get("partial_json", "") for event in events) == arguments
+    else:
+        call = next(event["item"] for event in events if event.get("type") == "response.output_item.done"
+                    and event["item"]["type"] == "function_call")
+        assert call["call_id"] == "call_preserved"
+        assert call["arguments"] == arguments
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("failure", ["json", "duplicate", "nan", "disconnect", "length", "unknown", "schema", "none", "no-tools", "parallel"])
+def test_native_invalid_batch_never_exposes_executable_calls(monkeypatch, protocol, stream, failure):
+    arguments = '{"path":"file.txt","content":"ok"}'
+    overrides = {}
+    finish = "tool_calls"
+    name = "write"
+    if failure == "json":
+        arguments = '{"path":'
+    elif failure == "duplicate":
+        arguments = '{"path":"a","path":"b","content":"ok"}'
+    elif failure == "nan":
+        arguments = '{"path":"a","content":NaN}'
+    elif failure == "disconnect":
+        finish = None
+    elif failure == "length":
+        finish = "length"
+    elif failure == "unknown":
+        name = "unregistered"
+    elif failure == "schema":
+        arguments = '{"path":42,"content":"ok"}'
+    elif failure == "none":
+        overrides["tool_choice"] = {"type": "none"} if protocol == "messages" else "none"
+    elif failure == "no-tools":
+        overrides["tools"] = []
+    elif failure == "parallel":
+        if protocol == "messages":
+            overrides["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
+        else:
+            overrides["parallel_tool_calls"] = False
+    _patch_native_upstream(monkeypatch, arguments, name=name, finish=finish, second=failure == "parallel")
+    response = _native_request(protocol, stream, **overrides)
+    if not stream:
+        assert response.status_code == 502
+        assert "error" in response.get_json()
+        return
+    assert response.status_code == 200
+    events = _wire_events(response)
+    assert any("error" in event or event.get("type") == "error" for event in events)
+    assert not any(event.get("choices", [{}])[0].get("delta", {}).get("tool_calls") for event in events)
+    assert not any(event.get("content_block", {}).get("type") == "tool_use" for event in events)
+    assert not any(event.get("item", {}).get("type") == "function_call" for event in events)
+    assert not any(event.get("type") in ("message_stop", "response.completed") for event in events)
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+def test_invalid_schema_rejected_before_upstream(monkeypatch, protocol):
+    called = []
+    monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: called.append(True))
+    schema = {"type": "not-a-json-schema-type"}
+    tools = ([{"name": "write", "input_schema": schema}] if protocol == "messages" else
+             [{"type": "function", "name": "write", "parameters": schema}] if protocol == "responses" else
+             [{"type": "function", "function": {"name": "write", "parameters": schema}}])
+    response = _native_request(protocol, False, tools=tools)
+    assert response.status_code == 400
+    assert called == []
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("failure", ["schema", "unknown-batch", "none", "parallel"])
+def test_text_tool_batch_uses_same_atomic_contract(monkeypatch, protocol, stream, failure):
+    arguments = {"path": "a.txt", "content": "text"}
+    if failure == "schema":
+        arguments["path"] = 42
+    calls = [{"operation": "write", "parameters": arguments}]
+    overrides = {}
+    if failure in ("unknown-batch", "parallel"):
+        calls.append({"operation": "unknown" if failure == "unknown-batch" else "write", "parameters": arguments})
+    if failure == "none":
+        overrides["tool_choice"] = {"type": "none"} if protocol == "messages" else "none"
+    elif failure == "parallel":
+        if protocol == "messages":
+            overrides["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
+        else:
+            overrides["parallel_tool_calls"] = False
+    _patch_upstream(monkeypatch, "@@ACTION@@" + json.dumps({"calls": calls}) + "@@END_ACTION@@")
+    response = _native_request(protocol, stream, **overrides)
+    if not stream:
+        assert response.status_code == 502
+        return
+    events = _wire_events(response)
+    assert any("error" in event or event.get("type") == "error" for event in events)
+    assert not any(event.get("choices", [{}])[0].get("delta", {}).get("tool_calls") for event in events)
+    assert not any(event.get("content_block", {}).get("type") == "tool_use" for event in events)
+    assert not any(event.get("item", {}).get("type") == "function_call" for event in events)
+    assert not any(event.get("type") in ("message_stop", "response.completed") for event in events)
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+def test_protocol_lifecycle_precedes_model_request(monkeypatch, protocol):
+    called = []
+    monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: called.append(True))
+    response = _native_request(protocol, True)
+    first = next(iter(response.response)).decode()
+    if protocol == "chat":
+        assert json.loads(first[6:])["choices"][0]["delta"]["role"] == "assistant"
+    elif protocol == "messages":
+        assert "event: message_start" in first
+    else:
+        assert "event: response.created" in first
+    assert called == []
+    response.close()
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+def test_named_choice_rejects_other_declared_tool(monkeypatch, protocol):
+    _patch_native_upstream(monkeypatch, '{"path":"a","content":"b"}')
+    if protocol == "messages":
+        tools = [{"name": name, "input_schema": {"type": "object"}} for name in ("write", "other")]
+        choice = {"type": "tool", "name": "other"}
+    elif protocol == "responses":
+        tools = [{"type": "function", "name": name, "parameters": {"type": "object"}} for name in ("write", "other")]
+        choice = {"type": "function", "name": "other"}
+    else:
+        tools = [{"type": "function", "function": {"name": name, "parameters": {"type": "object"}}} for name in ("write", "other")]
+        choice = {"type": "function", "function": {"name": "other"}}
+    response = _native_request(protocol, True, tools=tools, tool_choice=choice)
+    events = _wire_events(response)
+    assert any("error" in event or event.get("type") == "error" for event in events)
+    assert not any(event.get("choices", [{}])[0].get("delta", {}).get("tool_calls") for event in events)
+    assert not any(event.get("content_block", {}).get("type") == "tool_use" for event in events)
+    assert not any(event.get("item", {}).get("type") == "function_call" for event in events)
+
+
+def test_chat_history_without_current_tools_accepts_tool_result_turn(monkeypatch):
+    _patch_upstream(monkeypatch, "The earlier operation completed.")
+    response = _app().test_client().post("/v1/chat/completions", json={
+        "model": "chatglm", "stream": False, "tools": [],
+        "messages": [
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "call_history", "type": "function",
+                "function": {"name": "write", "arguments": '{"path":"a.txt","content":"done"}'},
+            }]},
+            {"role": "tool", "tool_call_id": "call_history", "content": "success"},
+        ],
+    })
+    assert response.status_code == 200
+    message = response.get_json()["choices"][0]["message"]
+    assert message["content"] == "The earlier operation completed."
+    assert not message.get("tool_calls")

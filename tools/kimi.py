@@ -1,18 +1,15 @@
 """Kimi K3 XTML 的完整响应解析；仅接受闭合、可无损解码的工具批次。"""
 
-import json
 import math
 import re
+
+from tools.contracts import strict_json_decoder
 
 
 _OPEN = "<|open|>"
 _CLOSE = "<|close|>"
 _ATTR = re.compile(r'\s*([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"')
 _TAG = re.compile(r"<\|open\|>\s*([A-Za-z_]+)\b((?:(?!<\|sep\|>).)*)<\|sep\|>", re.DOTALL)
-
-
-def _reject_constant(value):
-    raise ValueError("Kimi K3 JSON contains a non-finite constant")
 
 
 def _attributes(raw):
@@ -57,7 +54,7 @@ def _value(text, cursor, kind, block):
         return text[cursor:close.start()], close.end()
     value_start = _space(text, cursor)
     try:
-        value, size = json.JSONDecoder(parse_constant=_reject_constant).raw_decode(text[value_start:])
+        value, size = strict_json_decoder().raw_decode(text[value_start:])
     except (ValueError, RecursionError) as exc:
         raise ValueError("Kimi K3 typed argument contains invalid JSON") from exc
     valid = {

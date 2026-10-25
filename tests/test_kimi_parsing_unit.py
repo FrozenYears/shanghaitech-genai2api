@@ -91,6 +91,8 @@ def test_k3_real_model_terminal_response_marker_after_tools():
     _call("write", [("x", "array", "not-json")]),
     _call("write", [("x", "number", "NaN")]),
     _call("write", [("x", "object", '{"invalid":NaN}')]),
+    _call("write", [("x", "object", '{"path":"a","path":"b"}')]),
+    _call("write", [("x", "array", '[1e999]')]),
     _call("write", [("x", "string", "first"), ("x", "string", "second")]),
     '<|open|>call tool="write" index="1"<|sep|><|open|>argument key="x" type="string"<|sep|>unfinished',
 ])

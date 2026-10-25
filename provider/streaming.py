@@ -2,6 +2,7 @@
 import queue
 import socket
 import threading
+import time
 
 from errors import UpstreamError
 from tools.contracts import ToolContractError, validate_tool_calls
@@ -9,11 +10,15 @@ from tools.parsing import extract_tool_calls, find_tool_call_open, tool_call_pre
 
 
 class StreamControl:
-    def __init__(self):
+    def __init__(self, timeout=None):
         self.cancelled = threading.Event()
         self.lock = threading.Lock()
         self.response = None
         self.socket = None
+        self.deadline = None if timeout is None else time.monotonic() + timeout
+
+    def remaining(self):
+        return None if self.deadline is None else max(0.0, self.deadline - time.monotonic())
 
     def attach(self, response):
         # urllib3 的连接对象在 Connection: close 时可能已清空，保存实际读 socket。
@@ -53,9 +58,9 @@ class StreamControl:
             response.close()
 
 
-def heartbeat_events(factory, interval=10):
-    """有界桥接：消费者退出即关闭实际 HTTP 响应，生产者不得继续请求。"""
-    control = StreamControl()
+def heartbeat_events(factory, interval=10, timeout=None):
+    """有界桥接：全生成窗口到期或消费者退出即取消已取得的 HTTP 响应。"""
+    control = StreamControl(timeout)
     events = queue.Queue(maxsize=8)
     sentinel = object()
 
@@ -85,10 +90,19 @@ def heartbeat_events(factory, interval=10):
     worker.start()
     try:
         while True:
+            remaining = control.remaining()
+            if remaining == 0:
+                yield {"type": "error", "code": "upstream_request_timeout",
+                       "message": "Upstream generation exceeded the total tool-request time budget"}
+                return
             try:
-                event = events.get(timeout=interval)
+                event = events.get(timeout=interval if remaining is None else min(interval, remaining))
             except queue.Empty:
+                if control.remaining() == 0:
+                    continue
                 yield {"type": "heartbeat"}
+                continue
+            if control.remaining() == 0:
                 continue
             if event is sentinel:
                 return

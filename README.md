@@ -22,6 +22,8 @@ pixi install
 GENAI_TOKEN=学号@密码
 PORT=31100
 API_FORMAT=both
+GENAI_EMPTY_CONTINUATIONS=3
+GENAI_TOOL_REQUEST_TIMEOUT_SECONDS=600
 ```
 
 `GENAI_TOKEN` 也可以填写 JWT。`.env` 已被 Git 忽略，不会提交凭据；图片上传所需的令牌由代理从前端脚本自动获取，无需手工配置。
@@ -37,7 +39,7 @@ pixi run serve
 命令行参数可以覆盖 `.env` 中的设置：
 
 ```bash
-pixi run serve --port 31200 --api-format anthropic
+pixi run serve --port 31200 --api-format anthropic --empty-continuations 3 --tool-request-timeout 600
 ```
 
 也可以直接运行任意 `pixi run python main.py ...` 命令。
@@ -107,6 +109,8 @@ wire_api = "responses"
 | `--port` | 服务监听端口（也可写入 `.env` 的 `PORT`） | `31100` |
 | `--api-key` | 客户端认证密钥（也可通过 `API_KEY` 环境变量设置） | 无 |
 | `--api-format` | `openai`、`anthropic` 或 `both`（也可写入 `.env` 的 `API_FORMAT`） | `both` |
+| `--empty-continuations` | 工具请求的额外空继续次数；环境变量 `GENAI_EMPTY_CONTINUATIONS`，整数 `0..10`，0 仅禁用额外继续 | `3`（含首次最多 4 次生成） |
+| `--tool-request-timeout` | 工具请求首次及所有继续共享的上游生成窗口（秒）；环境变量 `GENAI_TOOL_REQUEST_TIMEOUT_SECONDS`，有限正数 | `600` |
 | `--debug` | 启用详细日志输出 | 关闭 |
 
 ## 特性
@@ -207,9 +211,9 @@ Pi 0.85.1 屏蔽用户插件后的真实验证见 [PI_REAL_WORLD_VALIDATION.md](
 
 ### 常用本地模型的工具闭环
 
-`deepseek-pro` 与 `Kimi-k3` 的真实 write → edit → read、8,389 字节流式内容、低预算截断和 edit 失败恢复结果见 [当前工具复测报告](TEST_REPORT_deepseek_pro.md#2026-10-24deepseek--kimi-真实工具闭环复测) 及 [测量摘要](validation/local-model-tools-2026-10-24.json)。两模型的直连／relay 样本最终文件均逐字节匹配并正常结束；Kimi 有一次首次长内容复制错误，经回读发现并修正，仍须保留写后核验。
+预算升级前，`deepseek-pro` 与 `Kimi-k3` 的真实 write → edit → read、8,389 字节流式内容、低预算截断和 edit 失败恢复结果见 [历史工具复测报告](TEST_REPORT_deepseek_pro.md#2026-10-24deepseek--kimi-真实工具闭环复测) 及 [测量摘要](validation/local-model-tools-2026-10-24.json)。当时两模型的直连／relay 样本最终文件均逐字节匹配并正常结束；Kimi 有一次首次长内容复制错误，经回读发现并修正，仍须保留写后核验。这些记录不作为本次多次空继续版本的验收结果。
 
-进一步的 33 KB 全文复制、约 320 KB 源码局部编辑、12 阶段持续开发及 11 类工具（搜索、命令、SQLite、HTTP、后台任务等）验证见 [长时多工具报告](TEST_REPORT_deepseek_pro.md#长文件持续开发与多类型工具补充验证) 和 [证据摘要](validation/kimi-endurance-2026-10-24.json)。Kimi 原生 K3 XTML 调用现在由第一跳严格解析并转换为三种 API 的工具事件，不再只作为正文结束。现有长文件优先局部 edit，代码需真实运行检查，文件内容需独立回读／哈希核验；代理解析正确不保证模型复制内容正确。
+此前的 33 KB 全文复制、约 320 KB 源码局部编辑、12 阶段持续开发及 11 类工具（搜索、命令、SQLite、HTTP、后台任务等）验证见 [历史长时多工具报告](TEST_REPORT_deepseek_pro.md#长文件持续开发与多类型工具补充验证) 和 [证据摘要](validation/kimi-endurance-2026-10-24.json)。Kimi 原生 K3 XTML 调用由第一跳严格解析并转换为三种 API 的工具事件，不再只作为正文结束。现有长文件优先局部 edit，代码需真实运行检查，文件内容需独立回读／哈希核验；代理解析正确不保证模型复制内容正确。
 
 ## 原生优先与流式链路
 
@@ -221,19 +225,27 @@ Pi 0.85.1 屏蔽用户插件后的真实验证见 [PI_REAL_WORLD_VALIDATION.md](
 
 本阶段因无法申请独立 API Key，明确放弃学校独立官方 API 路径，不再提供远程 base 或跳过网页第一跳的配置方案。保留学校网页登录认证与两层本地代理 Key；relay 的 `UPSTREAM_BASE_URL=http://127.0.0.1:31100` 仍是必需的本地链路配置，不得因此删除，也不应把 `native` 改成 `text`。
 
-流式请求先发送协议开始事件，再持续交付安全正文和独立思考增量；第一跳等待上游时每 10 秒发送心跳，relay 转发上游心跳。工具参数在完整响应结束、JSON/Schema/choice 校验后交付，不提前执行半截参数。流中错误不再发送成功结束事件。断开后关闭上游响应并中断读取；尚未取得响应头的连接阶段只能在请求返回或超时后清理，不能承诺立即取消远端推理。
+流式请求先发送协议开始事件，再持续交付安全正文和独立思考增量；第一跳等待上游时每 10 秒发送心跳，relay 转发上游心跳。工具参数在完整响应结束、JSON/Schema/choice 校验后整批交付，不提前执行半截参数。流中错误不再发送成功结束事件，Responses 还发送 `response.failed`。断开或总时限到期会关闭已取得的实际上游响应/socket；尚未取得响应头的阻塞连接不能立即打断，但主响应按总时限失败，worker 返回后清理且不再发新继续，不能承诺立即取消远端推理。
 
-对工具协议请求，第一跳仅在网页返回**零正文、零思考、零调用且正常 stop**时，保留历史并追加明确“继续”指令，最多再生成一次。这不是原任务或工具执行重放；若第二次仍空，返回 `upstream_empty_response`。思考/正文已交付、坏参数、断流或截断均不走该恢复路径。普通无工具请求的空完成也不再伪报成功。
+### 工具请求的空继续预算与总时限
 
-两跳现在保留结构化错误的安全 `message/type/code`，区分 `upstream_empty_response`、`upstream_stream_incomplete`、`upstream_stream_error`、`tool_call_parse_error` 和 `tool_arguments_invalid`。Schema 错误只说明约束、字段和位置，不回显参数值；relay 限长并遮蔽凭据，不转发整个错误体。定位结论及复验边界见 [阶段说明的根因分析](STAGE_NATIVE_FIRST.md#8-持续工作故障的根因与修复)。
+只有启用工具协议恢复（`recover_empty=True`）的请求，在网页返回**零正文、零思考、零调用且正常 `stop`**时，才由**第一跳**恢复。默认额外继续 `N=3`，加上首次最多 4 次生成；可配置 `0..10`，0 仅禁用额外继续。relay native 不再重试生成，避免两层预算相乘。
+
+每次继续都保留完整原历史，使用原 `chatInfo` 加真实“第 k/N 次”标记与明确继续指令；不累积空 assistant 或旧继续提示，不切模型、不降级 text、不执行或重放客户端工具。思考/正文已产生、坏 JSON/Schema、解析失败、断流或截断均禁止重放。次数耗尽仍为空，返回 `upstream_empty_response`；普通无工具请求不空继续，空完成也不伪报成功。
+
+工具协议请求从首次上游生成开始，共享默认 **600 秒**窗口（不含附件预处理），首次与所有继续共用 deadline；ping、心跳和下一次继续均不续期。即使已输出正文/思考或正在缓存调用，到期仍以 `upstream_request_timeout` 失败，不交付未完成校验的调用。额外次数为 0 时仍受该时限；普通无工具请求不加这一工具请求时限。
+
+这不是网络 read timeout，也不是整场 agent 的任务时长：单次 HTTP 读等待限制不能约束持续收到 ping 的流，而 agent 可跨多个请求和工具执行运行。预算只覆盖没有交付有效内容的空完成，增加它不会放宽调用校验或重放已执行工具，但平台仍可能持续空返或超时。耗尽后当前 HTTP 仍会中断；代理必须报告真实失败，agent 可依据完整历史、实际工具结果和错误显式继续，不能承诺任务永不中断。恢复 decision 图与完整配置边界见 [阶段说明第四节](STAGE_NATIVE_FIRST.md#4-sse-生命周期终态与取消)。
+
+两跳保留结构化错误的安全 `message/type/code`，区分 `upstream_request_timeout`、`upstream_empty_response`、`upstream_stream_incomplete`、`upstream_stream_error`、`tool_call_parse_error` 和 `tool_arguments_invalid`。Schema 错误只说明约束、字段和位置，不回显参数值；relay 限长并遮蔽凭据，不转发整个错误体。历史一次继续修复及取证边界见 [阶段说明的根因分析](STAGE_NATIVE_FIRST.md#8-历史持续工作故障的根因与一次继续修复)，不将其旧测试数或服务 PID 当成本轮部署证据。
 
 ## 已知限制
 
-- **令牌过期的恢复仍有缺口**：模型元数据与文档上传阶段遇到失效令牌时，实际观察到 HTTP 500 或流中断，尚未统一恢复与正确传播错误。本轮重启服务恢复了登录状态，详见 Pi 验证报告。
+- **令牌过期的恢复仍有缺口**：模型元数据与文档上传阶段遇到失效令牌时，实际观察到 HTTP 500 或流中断，尚未统一恢复与正确传播错误。历史 Pi 验证曾通过重启恢复登录，不能据此认定该缺口已修复。当前预算版本已经重启部署，正式复测见 [架构说明第九节](STAGE_NATIVE_FIRST.md#9-当前预算版本的部署与实际复测)。
 - **模型名完全透传**：请求里的 `model` 会直接作为 GenAI 平台的 `aiType` 发送，不做任何映射。请填写平台真实存在的模型 id。
 - **无服务端会话状态**：Responses 的 `previous_response_id`、`item_reference`、`store=true` 等不能在本代理恢复状态，明确返回 400。客户端必须每轮发送完整历史。
 - **Responses API 是兼容子集**：支持 message、function_call、custom text、namespace、reasoning 与流式文本事件；custom grammar、未实现的托管工具类型不会静默忽略，而是报错。web_search 仍只映射为网页搜索，不冒充原生托管事件。普通文本长度截断返回 `response.incomplete`；工具截断返回错误且不交付调用。
-- **Anthropic thinking 签名是占位值**：上游 GenAI 没有 Anthropic 意义上的签名，代理返回 `genai-compat-no-signature`。历史里的 thinking 块会被忽略，不会转发给上游。
+- **Anthropic thinking 签名是占位值**：上游 GenAI 没有 Anthropic 意义上的签名，代理返回 `genai-compat-no-signature`。relay native 保留 Chat 能表达的历史思考元数据，不表示网页消费这些字段；不同供应商的加密 reasoning/signature 不可互换，Responses 不重建加密思考状态。
 - **图片以内联方式发送**：base64 图片会以 data URL 随请求体一并发送，体积约为原图的 4/3，因此大图会拉长请求体；代理不再调用网页的图片服务，也就不依赖任何前端令牌。只验证过 PNG，其他格式由平台侧解析能力决定。
 - **只有独立 reasoning 字段会被结构化透传**：`reasoning` / `reasoning_content` 会映射到客户端思考字段。上游若把分析写成未标记正文，代理不会猜测其类别。Anthropic 输出路径会过滤正文 `<think>...</think>` 标签；不使用网页历史中的标签内容来伪造实时思考。
 - **思考内容由上游决定，且不保证返回**：deepseek-pro 在 Pi 这类大提示词下（约 2.2 万 token，含 24 个工具 schema）经常完全不发 `reasoning_content`；换成等长的中性提示词则稳定返回。这不是代理丢字段，代理也不会补造。重复同一问题还会命中平台缓存，直接返回旧答案且不带思考。
@@ -244,7 +256,7 @@ Pi 0.85.1 屏蔽用户插件后的真实验证见 [PI_REAL_WORLD_VALIDATION.md](
 - **输出长度由代理本地强制**：上游不执行 `maxToken`，代理按估算 token 在本地截断，普通文本截断时 Chat 的 `finish_reason` 与 Anthropic 的 `stop_reason` 会分别返回 `length` / `max_tokens`，Responses 发出 `response.incomplete`；若截断命中工具调用，则不发出工具调用并返回错误。预算包含思维链 token，因此对推理模型给很小的 `max_tokens` 时可能只产出思维链、正文为空。
 - **usage 是本地估算**：`prompt_tokens` / `input_tokens` / `completion_tokens` 均由代理按文本估算，不是上游真实计费值。
 - **思考支持开关，不支持档位或精确预算**：客户端推理参数映射为上游 `thinking` 布尔值。模型标为不提供开关、额度不足或上游未返回思考字段时，代理不会补造思考内容。`/v1/models` 的 `capabilities` 来自平台配置，不代表已逐模型保证所有组合都可用。
-- **上游超时与错误传播**：连接超时 10 秒，读取超时 300 秒；上游错误、提前 EOF 或损坏调用以流式 `error` / 非流式 502 返回，不把错误当正文，不发送成功完成标记。已交付正文后不自动重放请求。
+- **上游超时与错误传播**：第一跳连接超时 10 秒、网络读取间隔超时 300 秒；relay 的上游网络读取间隔默认 1800 秒，均不等于工具请求默认 600 秒共享生成窗口。持续 ping 可避免网络 read timeout，却不延长该总窗口。上游错误、提前 EOF 或损坏调用以流式 `error` / 非流式 502 返回，不把错误当正文，不发送成功完成标记。已产生正文/思考后不自动重放请求。
 - **DeepSeek DSML 与 Kimi XTML**：支持明确闭合的 DeepSeek `invoke/parameter`（字符串原样保留、非字符串严格 JSON 解码）、既有 DSML call 变体以及 Kimi typed tools 通道；不补齐缺失标签。代码引用与 `<think>` 内的工具示例不是操作。
 
 ## 上下文探测工具

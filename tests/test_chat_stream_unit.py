@@ -1,5 +1,11 @@
 import json
 import threading
+import queue
+from types import SimpleNamespace
+
+import pytest
+
+from provider import streaming
 
 from provider import genai
 from provider.genai import stream_genai_response
@@ -15,6 +21,8 @@ class DummyTokenManager:
 
 class DummyConfig:
     token_manager = DummyTokenManager()
+    empty_continuations = 3
+    tool_request_timeout_seconds = 600.0
 
 
 def _fake_response(chunks):
@@ -179,7 +187,7 @@ def test_waiting_stream_sends_heartbeat_and_close_releases_http_response(monkeyp
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
     monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: BlockingResponse())
     heartbeat = genai.heartbeat_events
-    monkeypatch.setattr(genai, "heartbeat_events", lambda factory: heartbeat(factory, interval=0.01))
+    monkeypatch.setattr(genai, "heartbeat_events", lambda factory, **kwargs: heartbeat(factory, interval=0.01, **kwargs))
     stream = stream_genai_response("hi", [{"role": "user", "content": "hi"}], "chatglm", 100, DummyConfig())
     assert '"role": "assistant"' in next(stream)
     assert next(stream) == ": keep-alive\n\n"
@@ -222,3 +230,171 @@ def test_no_tools_keeps_action_text_for_explicit_text_mode(monkeypatch):
     assert "".join(event["choices"][0]["delta"].get("content", "") for event in events) == content
     assert not any(event["choices"][0]["delta"].get("tool_calls") for event in events)
     assert events[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def _controlled_polls(monkeypatch, ready):
+    """只在消费者读空队列时推进时钟，不依赖线程调度或真实等待时长。"""
+    clock = SimpleNamespace(value=100.0)
+    workers = []
+
+    def start_worker(*args, **kwargs):
+        worker = threading.Thread(*args, **kwargs)
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(streaming, "threading", SimpleNamespace(
+        Thread=start_worker, Event=threading.Event, Lock=threading.Lock,
+    ))
+
+    class ControlledQueue(queue.Queue):
+        def get(self, block=True, timeout=None):
+            assert ready.wait(2), "上游未到达可控阻塞点"
+            try:
+                return super().get(block=False)
+            except queue.Empty:
+                clock.value += 4
+                raise
+
+    monkeypatch.setattr(streaming, "time", SimpleNamespace(monotonic=lambda: clock.value))
+    monkeypatch.setattr(streaming, "queue", SimpleNamespace(Queue=ControlledQueue, Empty=queue.Empty, Full=queue.Full))
+    return clock, workers
+
+
+def test_stream_control_remaining_uses_one_absolute_deadline(monkeypatch):
+    clock = SimpleNamespace(value=100.0)
+    monkeypatch.setattr(streaming, "time", SimpleNamespace(monotonic=lambda: clock.value))
+    bounded = streaming.StreamControl(timeout=10)
+    unbounded = streaming.StreamControl()
+    assert bounded.remaining() == 10
+    clock.value += 7
+    assert bounded.remaining() == 3
+    clock.value += 50
+    assert bounded.remaining() == 0
+    assert unbounded.remaining() is None
+
+
+@pytest.mark.parametrize("prefix", ["none", "text", "native", "markup"])
+@pytest.mark.parametrize("cancel", [False, True])
+def test_tool_deadline_and_cancellation_close_socket_and_drop_unvalidated_calls(monkeypatch, prefix, cancel):
+    waiting = threading.Event()
+    released = threading.Event()
+    producer_stopped = threading.Event()
+    shutdown = threading.Event()
+    closed = threading.Event()
+    _clock, workers = _controlled_polls(monkeypatch, waiting)
+    requested = []
+
+    class Socket:
+        def shutdown(self, how):
+            assert how == streaming.socket.SHUT_RDWR
+            shutdown.set()
+            released.set()
+
+    class Response:
+        status_code = 200
+        raw = SimpleNamespace(_connection=SimpleNamespace(sock=Socket()))
+
+        def iter_lines(self, **kwargs):
+            try:
+                if prefix == "text":
+                    delta = {"content": "Already visible prose"}
+                elif prefix == "native":
+                    delta = {"tool_calls": [{"index": 0, "id": "call_late", "type": "function",
+                                             "function": {"name": "Bash", "arguments": '{"command":"pwd"}'}}]}
+                elif prefix == "markup":
+                    delta = {"content": '@@ACTION@@{"calls":[{"operation":"Bash","parameters":{"command":"pwd"}}]}@@END_ACTION@@'}
+                else:
+                    delta = {}
+                yield ("data: " + json.dumps({"choices": [{"delta": delta, "finish_reason": None}]})).encode()
+                waiting.set()
+                assert released.wait(2), "取消未释放已取得的响应"
+                yield b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}'
+            finally:
+                producer_stopped.set()
+
+        def close(self):
+            closed.set()
+            released.set()
+
+    def post(*args, **kwargs):
+        requested.append(True)
+        return Response()
+
+    monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda *a: "xinference")
+    monkeypatch.setattr(genai.requests, "post", post)
+    config = DummyConfig()
+    config.tool_request_timeout_seconds = 10
+    stream = stream_genai_response("run", [], "chatglm", 1000, config, tools=[
+        {"type": "function", "function": {"name": "Bash", "parameters": {"type": "object"}}},
+    ])
+    assert '"role": "assistant"' in next(stream)
+    chunks = []
+    if cancel:
+        while True:
+            chunk = next(stream)
+            chunks.append(chunk)
+            if chunk == ": keep-alive\n\n":
+                break
+        stream.close()
+    else:
+        chunks = list(stream)
+        assert chunks.count(": keep-alive\n\n") == 2
+        errors = [chunk["error"] for chunk in _data_chunks(chunks) if "error" in chunk]
+        assert [error["code"] for error in errors] == ["upstream_request_timeout"]
+    assert shutdown.is_set()
+    assert closed.is_set()
+    assert producer_stopped.wait(2)
+    for worker in workers:
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+    assert requested == [True]
+    assert "[DONE]" not in "".join(chunks)
+    assert not any(chunk.get("choices", [{}])[0].get("delta", {}).get("tool_calls") for chunk in _data_chunks(chunks))
+    if prefix == "text":
+        assert "Already visible prose" in "".join(chunks)
+
+
+def test_timeout_before_response_headers_cleans_late_response_without_restarting(monkeypatch):
+    headers_waiting = threading.Event()
+    release_headers = threading.Event()
+    post_returned = threading.Event()
+    closed = threading.Event()
+    iterated = []
+    requested = []
+    _clock, workers = _controlled_polls(monkeypatch, headers_waiting)
+
+    class Response:
+        status_code = 200
+
+        def iter_lines(self, **kwargs):
+            iterated.append(True)
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+
+        def close(self):
+            closed.set()
+
+    def post(*args, **kwargs):
+        requested.append(True)
+        headers_waiting.set()
+        assert release_headers.wait(2), "测试未释放尚未返回响应头的请求"
+        post_returned.set()
+        return Response()
+
+    monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda *a: "xinference")
+    monkeypatch.setattr(genai.requests, "post", post)
+    config = DummyConfig()
+    config.tool_request_timeout_seconds = 10
+    try:
+        events = list(genai.iter_genai_stream("run", [], "chatglm", 1000, config, recover_empty=True))
+        assert [event["code"] for event in events if event["type"] == "error"] == ["upstream_request_timeout"]
+        assert not post_returned.is_set()
+        assert not closed.is_set()
+    finally:
+        release_headers.set()
+    assert post_returned.wait(2)
+    assert closed.wait(2)
+    for worker in workers:
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+    assert requested == [True]
+    assert iterated == []

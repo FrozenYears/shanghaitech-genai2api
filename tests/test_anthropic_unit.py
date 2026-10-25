@@ -121,6 +121,8 @@ def test_stream_genai_as_anthropic_emits_tool_use_blocks(monkeypatch):
 
     class DummyConfig:
         token_manager = DummyTokenManager()
+        empty_continuations = 3
+        tool_request_timeout_seconds = 600.0
 
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
     monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: FakeResponse())
@@ -186,6 +188,8 @@ def test_stream_genai_as_anthropic_keeps_bare_malformed_json_as_text(monkeypatch
 
     class DummyConfig:
         token_manager = DummyTokenManager()
+        empty_continuations = 3
+        tool_request_timeout_seconds = 600.0
 
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
     monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: FakeResponse())
@@ -236,6 +240,8 @@ def test_stream_genai_as_anthropic_filters_split_thinking_blocks(monkeypatch):
 
     class DummyConfig:
         token_manager = DummyTokenManager()
+        empty_continuations = 3
+        tool_request_timeout_seconds = 600.0
 
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
     monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: FakeResponse())
@@ -289,6 +295,8 @@ def _dummy_config_with_upstream(monkeypatch, chunks):
 
     class DummyConfig:
         token_manager = DummyTokenManager()
+        empty_continuations = 3
+        tool_request_timeout_seconds = 600.0
 
     monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda model, token: "xinference")
     monkeypatch.setattr(genai.requests, "post", lambda *args, **kwargs: FakeResponse())

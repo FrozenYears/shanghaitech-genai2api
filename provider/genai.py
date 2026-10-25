@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import uuid
+from contextlib import closing
 from datetime import datetime
 
 import requests
@@ -69,45 +70,59 @@ def split_history_messages(messages):
 
 def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token=None, upstream_options=None,
                       recover_empty=False):
-    """增量正文/思考；仅工具请求的完全空 stop 允许一次显式继续。"""
+    """完全空 stop 可按预算继续；所有生成共享一个时限，不重放客户端工具。"""
+    budget = config.empty_continuations if recover_empty else 0
+    timeout = config.tool_request_timeout_seconds if recover_empty else None
+
     def source(control):
         question = chat_info
-        for attempt in range(2 if recover_empty else 1):
+        for attempt in range(budget + 1):
+            if control.cancelled.is_set():
+                return
+            if control.remaining() == 0:
+                yield {"type": "error", "code": "upstream_request_timeout",
+                       "message": "Tool-request generation deadline exhausted before another continuation"}
+                return
             emitted = False
             completed = False
-            for event in _iter_genai_stream(question, history_messages, model, max_tokens, config,
-                                           token, upstream_options, control):
-                if event["type"] == "delta" and (event.get("content") or event.get("reasoning")):
-                    emitted = True
-                if event["type"] == "error":
-                    yield event
-                    return
-                if event["type"] == "done":
-                    completed = True
-                    if (recover_empty and not emitted and not event.get("tool_calls")
-                            and event.get("finish_reason") == "stop"):
-                        if attempt == 0 and not control.cancelled.is_set():
-                            # 没有可见增量或调用被交付。改变提问请求“继续”，不是重放坏参数/工具。
-                            question = chat_info + (
-                                "\n\n上一轮生成已结束，但没有返回任何正文、思考或工具调用，"
-                                "没有新的工具调用交付给客户端。请根据完整历史和当前任务继续："
-                                "需要操作时给出完整合法调用，否则给出最终答复。"
-                                "历史工具结果已经实际执行，不要重复已完成的操作，也不要模拟结果。"
-                            )
-                            logger.warning("GenAI completed empty model=%s; requesting one continuation", model)
-                            break
-                        yield {"type": "error", "code": "upstream_empty_response",
-                               "message": "Upstream completed empty after one continuation; no tool call was delivered"}
+            with closing(_iter_genai_stream(question, history_messages, model, max_tokens, config,
+                                             token, upstream_options, control)) as upstream:
+                for event in upstream:
+                    if event["type"] == "delta" and (event.get("content") or event.get("reasoning")):
+                        emitted = True
+                    if event["type"] == "error":
+                        yield event
+                        return
+                    if event["type"] == "done":
+                        completed = True
+                        if (recover_empty and not emitted and not event.get("tool_calls")
+                                and event.get("finish_reason") == "stop"):
+                            if control.cancelled.is_set():
+                                return
+                            if attempt < budget:
+                                # 历史不变；次数标记反映真实继续次数，避免反复发送同一空问题。
+                                question = chat_info + (
+                                    f"\n\n本请求第 {attempt + 1}/{budget} 次空完成继续。"
+                                    "上一轮生成已结束，但没有返回任何正文、思考或工具调用，"
+                                    "没有新的工具调用交付给客户端。请根据完整历史和当前任务继续："
+                                    "需要操作时给出完整合法调用，否则给出最终答复。"
+                                    "历史工具结果已经实际执行，不要重复已完成的操作，也不要模拟结果。"
+                                )
+                                logger.warning("GenAI completed empty model=%s; continuation=%d/%d",
+                                               model, attempt + 1, budget)
+                                break
+                            yield {"type": "error", "code": "upstream_empty_response",
+                                   "message": f"Upstream completed empty after {budget} continuations; no tool call was delivered"}
+                            return
+                        yield event
                         return
                     yield event
+                else:
+                    if not completed and not control.cancelled.is_set():
+                        yield {"type": "error", "message": "Upstream stream ended before completion",
+                               "code": "upstream_stream_incomplete"}
                     return
-                yield event
-            else:
-                if not completed:
-                    yield {"type": "error", "message": "Upstream stream ended before completion",
-                           "code": "upstream_stream_incomplete"}
-                return
-    yield from heartbeat_events(source)
+    yield from heartbeat_events(source, timeout=timeout)
 
 
 def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token, upstream_options, control):
@@ -317,6 +332,9 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
         yield {"type": "done", "finish_reason": "length" if truncated else finish_reason, "tool_calls": calls}
 
     except Exception as e:
+        if control.cancelled.is_set():
+            # 主响应已因取消或deadline结束；主动shutdown引起的读异常不是第二个上游故障。
+            return
         logger.exception("Error in iter_genai_stream")
         yield {"type": "error", "message": str(e), "code": getattr(e, "code", "upstream_stream_error")}
     finally:

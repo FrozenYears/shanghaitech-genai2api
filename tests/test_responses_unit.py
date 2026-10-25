@@ -52,6 +52,8 @@ class DummyTokenManager:
 
 class DummyConfig:
     token_manager = DummyTokenManager()
+    empty_continuations = 3
+    tool_request_timeout_seconds = 600.0
 
 
 def _patch_upstream(monkeypatch, chunks):

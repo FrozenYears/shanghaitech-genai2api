@@ -1,7 +1,14 @@
 # 本地工作日志
 
-## 当前状态：持续工作故障根因修复（2026-10-25）
+## 当前状态：多次空继续预算部署与正式复测（2026-10-25）
 
+- 本轮checkpoint根`7a86b50`、relay`286cd38`。第一跳默认额外空继续3次（合法0..10，0禁用），首次加继续最多4次；默认600秒覆盖整个工具请求上游生成窗口，ping/心跳/新继续不续期。配置与CLI已写入架构文档，原一次策略标为历史。
+- 根388 passed、relay89 passed/259 subtests。真实socket持续ping测试在0.2秒窗口下约0.234秒返回`upstream_request_timeout`、实际连接关闭、读取线程退出，未交付工具。正常取消的主动shutdown不再误报第二个网络故障。
+- 正式服务已重启：第一跳Python PID62956、relay Python PID107928，服务句柄`GenaiFirstHopBudget`、`GenaiRelayBudget`均persistent。启动参数显式3次/600秒，日志确认策略加载，原31100/31110健康。
+- 通过正式双跳的真实omp20阶段复测已完成：DeepSeek851.204秒、20/20阶段、165工具、96模型响应尝试，最终71累计断言通过；源日志20次空继续（17次第1、3次第2），另两次edit缺path须显式反馈修复。Kimi330.282秒、0/20、17工具、11响应尝试；三轮均正常非空结束但最后仍有金额舍入错误，并非空继续预算耗尽或超时，不能记成功。固定fixture均不变。
+- 用户选择保留本轮两个正式复测目录`.validation-runtime/omp-deepseek-pro-bj6xlsuj`、`.validation-runtime/omp-kimi-k3-k7vtu9dw`，已清理socket临时脚本和两个测试字节码缓存；精简结果`validation/recovery-budget-2026-10-25.json`。此前正式长测与根因关键取证目录保持不动。
+
+## 上一阶段：持续工作故障根因修复
 - 本轮 checkpoint：根`75afcfc`、relay`9e0c6e6`。真实网页SSE已复现零正文/零思考/零调用却正常stop；未发现完整内容被relay丢掉的证据，网页内部成因仍不可见。确认第一跳空成功和relay覆盖具体错误是代理缺陷。
 - 第一跳只对工具请求的完全空正常完成发起一次保留历史的明确继续，禁止重放已有增量、坏参数、断流或截断；持续空与仅思考回答不伪报成功。两跳统一保留安全message/type/code，Schema错误不回显参数值；没有放宽parser、猜参数或改变模型。
 - 回归根305 passed、relay89 passed/259 subtests。实际旧失败历史副本续作：DeepSeek任务10–12独立50断言通过，Kimi任务2–4独立20断言通过；录制空帧故障注入后接真实GenAI，预算阶段46断言通过。额外DeepSeek取证两次自然空stop自动恢复，后遇坏JSON安全拒绝，独立检查还发现模型预算实现错误，未将其算作业务成功。

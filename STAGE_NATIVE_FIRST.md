@@ -1,6 +1,6 @@
 # 原生优先阶段说明：两跳链路与重构边界
 
-本文记录 `feat/native-first-streaming` 阶段的当前实现契约：第一跳空完成/未交付坏调用恢复，以及可选的 omp 自动验收监督。最初重构基线为根仓库 `a7b3186`、relay `44639ec`；“重构前”指这两个提交之前。第七至九节保留历史部署和复测，不代表当前服务；最新验证在第十节记录。
+本文记录 `feat/native-first-streaming` 阶段的当前实现契约：第一跳空完成/未交付坏调用恢复，以及可选的 omp 自动验收监督。第五节分别对照双跳原作者仓库 `main`、个人 fork 的 `main` 和本地重构前冻结点，不将它们混称为同一“旧版”。第七至九节保留历史部署和复测，不代表当前服务；最新验证在第十节记录。
 
 ## 1. 当前采用的路线
 
@@ -149,23 +149,79 @@ pixi run serve --empty-continuations 8 --tool-repair-attempts 3 --tool-request-t
 实现前通过 GitHub 字面源码检索并直接核对 [Pydantic AI 的 SQL 验收示例](https://github.com/pydantic/pydantic-ai/blob/main/examples/pydantic_ai_examples/sql_gen.py)：真实 `EXPLAIN` 校验失败后使用 `ModelRetry` 将诊断交回模型，而不是修字符串后直接执行。本项目只借鉴“独立校验→有限反馈→重新生成”，没有引入该依赖或复制其实现；它不证明学校网页具备生成端约束，也不保证业务成功。
 
 
-## 5. 与重构前的对照
+## 5. 与双跳原仓库及本地重构前分支的对照
 
-下表以根仓库 `a7b3186^`、relay 仓库 `44639ec^` 的实现为对照，而不是把旧版描述成完全没有工具或流式支持。
+### 5.1 对照版本与范围
 
-| 维度 | 重构前 | 当前阶段 |
+以下以2026-10-25核对的远端分支及本地Git快照为准。分支会移动，表中链接固定到提交；“原仓库”指两位原作者的仓库，而不是当前个人fork或本地同名分支。
+
+| 基线 | 第一跳 `shanghaitech-genai2api` | 第二跳 `genai2agent-relay` |
 | --- | --- | --- |
-| relay 核心接口 | `TextActionRelay` 调用 backend `complete()`，等待整份普通文本回复 | `ActionRelay` 消费 backend `stream()`，默认 native |
-| 两跳间工具协议 | relay 把工具定义/历史编成文本，解析最终 action 封套 | relay 向第一跳发送结构化字段，由第一跳单独承担网页文本适配 |
-| relay 流式体验 | 核心先收齐结果，下游无法由核心实时获得正文/思考 | 开始事件先发、正文/思考增量传递、工具整批末尾交付 |
-| 第一跳解析 | 已支持部分 Kimi/action/DSML；另有宽松 JSON、Python 字面量、裸 JSON/函数样式/围栏猜测、Bash 参数修补等恢复分支 | 保留明确协议，删除猜测/修补分支；优先结构化调用，显式 DSML invoke/parameter 严格解码 |
-| 坏调用的处理 | 第一跳部分提取分支会跳过未知工具后继续收集；并非所有入口共用完整批次契约 | 第一跳三种 API 共用 contracts；relay 也做终态整批校验，非法成员不被过滤掉后继续交付 |
-| 重试 | 旧 relay 对解析失败可请求重新序列化，对空回复可追加继续提示 | native 恢复集中第一跳：严格空继续与未交付坏调用纠错独立累计、共用时限；可选 agent 监督器另做真实验收反馈，不重放工具 |
-| 历史关联 | 文本转换为主，结构保留受旧 `TextMessage(role, content)` 限制 | native 显式保留 tool_calls/tool_call_id 与可表达的思考元数据；网页文本层也保留 ID |
-| 工具执行者 | 客户端 | 仍是客户端；代理没有新增执行权限 |
-| 网页/附件/搜索依赖 | 依赖学校网页后端；已有附件、搜索、思考功能 | 继续使用同一网页路线，不声称改造为学校官方函数 API |
+| 原作者 `main` | [`jollyxenon`：`7e95aab`](https://github.com/jollyxenon/shanghaitech-genai2api/tree/7e95aab9cb2e76d9f1a7686e4c0ed3dbabf9525e) | [`negativegluon`：`dbb8f65`](https://github.com/negativegluon/genai2agent-relay/tree/dbb8f65841345704b84c5dd368190277dcdd5737) |
+| 个人fork的远端 `main` | [`FrozenYears`：`7e95aab`](https://github.com/FrozenYears/shanghaitech-genai2api/tree/7e95aab9cb2e76d9f1a7686e4c0ed3dbabf9525e)，当时与原作者相同 | [`FrozenYears`：`6b02115`](https://github.com/FrozenYears/genai2agent-relay/tree/6b02115ea3bdaba6e803223fd3e5af46d73104ba)，已包含部分文本链路修复 |
+| 本地原生重构前 | [`e682010`](https://github.com/FrozenYears/shanghaitech-genai2api/tree/e682010d1acff9e0ee194d2685e73490e2369ecc)，即 `a7b3186^`；承接本地Windows线 `960ce71` | [`5d3bd12`](https://github.com/FrozenYears/genai2agent-relay/tree/5d3bd12855269e9b6e901dc87465f5ca11f96157)，即 `44639ec^`；与本地 `main@5ad2e8e` 内容树相同 |
+| 本文当前实现 | `feat/native-first-streaming`；功能快照 [`bc99766`](https://github.com/FrozenYears/shanghaitech-genai2api/tree/bc99766401b70b164ab7176f10763c5214c6fc46)，本轮文档修改前发布点 `b53f8f9` | `feat/native-first-streaming`；发布快照 [`4a137bc`](https://github.com/FrozenYears/genai2agent-relay/tree/4a137bca3b8fcf39594db83b3c016eddb73b9797) |
 
-变化的目标是**少做一次有损文本转换、尽早交付安全增量、失败时不产生不完整调用**，不是承诺所有模型都会正确用工具，也不是用“兼容”掩盖格式错误。
+本地 `main` 可能领先远端 `main`，远端 `feat/windows-platform` 也不等于本地同名分支，不能只按分支名判断功能。下列是源码与设计对照，不是把原作者版、重构前版和当前版在同一上游负载下实测得到的性能或成功率排名；当前工作分支也尚未因此合并进 `main`。
+
+### 5.2 总体设计为什么改变
+
+原第二跳面向“不可靠支持原生工具的普通Chat后端”：主动去掉工具/系统角色通道，把定义、历史和结果转成普通文本，等待完整action封套，再校验并恢复为客户端工具事件。这个取舍将工具格式适配集中到第二跳，代价是上游结构丢失和整份响应缓冲；它不是没有安全校验或没有三协议接口。
+
+当前第一跳和第二跳一起维护，第一跳本身已有工具适配能力。因此改为**两跳之间保留标准工具结构，只有第一跳承担学校网页的文本边界**。第二跳消费结构化SSE，不再把已恢复的调用转成文本后重复推断；客户端仍执行工具。请求级恢复集中第一跳，业务验收和任务续作则交给可选agent监督器，三者职责不互相冒充。
+
+### 5.3 第一跳：保留网页能力，重做工具契约与交付
+
+| 维度 | 原作者 `main@7e95aab` | 当前实现 |
+| --- | --- | --- |
+| 协议入口 | 已有Chat、Messages、Responses；不是只有Chat | 保留三入口，统一请求校验和模型输出交付契约；不是本次才加入Responses |
+| 上游与认证 | 学校网页聊天端点；已有JWT、学号密码/CAS登录和令牌刷新 | 仍走相同网页路线，不转独立官方API；登录恢复不等于所有元数据/附件认证缺口都已修复 |
+| 文本工具解析 | 已有XML/DSML；还会尝试宽松JSON、Python字面量、裸JSON、函数样式、代码围栏和畸形参数恢复，部分路径补括号/转义或猜Bash参数 | 只接受明确完整的action/XML/DSML/Kimi协议；删除宽松猜测和参数修补，引用内示例不当作执行通道 |
+| 网页结构化输出 | 通用流主要读取正文和思考，不累计标准 `delta.tool_calls` | 按index累积调用ID、名称和参数；原生字段优先，完整终态后再统一校验；不保证学校每次会输出这些字段 |
+| 参数与批次校验 | 工具名过滤不等于完整Schema契约；部分解析路径跳过坏/未知调用继续提取 | 三协议共用JSON Schema、choice、并行限制和唯一ID校验；重复键/非有限数拒绝，一个坏成员拒绝整批 |
+| 历史关联 | 历史调用转文本时存在丢失调用ID的路径，工具结果虽含ID也不足以完整配对 | 历史assistant调用ID与tool结果ID关联保留，结果明确为已经执行，不按顺序猜归属 |
+| 流式与资源 | 第一跳原本已能流出普通正文/思考；工具也原本需等收全，不应写成“原版完全不流式” | 安全正文/思考增量、协议开始事件、有界心跳桥接和取消；调用仍在完整校验后交付，不承诺逐token工具执行 |
+| 网页特性与部署 | 已有图片、文档、搜索、思考开关及Pixi使用方式 | 继续保留；思考仍只是布尔开关、搜索是网页功能、文档仍走网页上传，不把这些列为native重构新增的模型能力 |
+| 生成恢复 | 没有当前统一的空继续/未交付坏调用恢复状态机和累计生成deadline | 严格空完成额外8次、未交付坏调用纠错3次，共享900秒窗口；已交付内容、断流、截断和到期不重放 |
+
+源码依据：原版 [`provider/genai.py`](https://github.com/jollyxenon/shanghaitech-genai2api/blob/7e95aab9cb2e76d9f1a7686e4c0ed3dbabf9525e/provider/genai.py)、[`tools/parsing.py`](https://github.com/jollyxenon/shanghaitech-genai2api/blob/7e95aab9cb2e76d9f1a7686e4c0ed3dbabf9525e/tools/parsing.py)、[`provider/features.py`](https://github.com/jollyxenon/shanghaitech-genai2api/blob/7e95aab9cb2e76d9f1a7686e4c0ed3dbabf9525e/provider/features.py)；当前 [`iter_genai_stream` / `_iter_genai_stream`](https://github.com/FrozenYears/shanghaitech-genai2api/blob/bc99766401b70b164ab7176f10763c5214c6fc46/provider/genai.py)、[`validated_events`](https://github.com/FrozenYears/shanghaitech-genai2api/blob/bc99766401b70b164ab7176f10763c5214c6fc46/provider/streaming.py)、[`validate_tool_calls`](https://github.com/FrozenYears/shanghaitech-genai2api/blob/bc99766401b70b164ab7176f10763c5214c6fc46/tools/contracts.py)。
+
+### 5.4 第二跳：从纯文本工具中继变为native-first流式网关
+
+| 维度 | 原作者 `main@dbb8f65` | 当前实现 |
+| --- | --- | --- |
+| API外壳 | 已有Chat、Messages、Responses、模型列表及token粗估端点 | 接口继续保留；主要变化是内部传输、校验与响应生命周期，不是新增加三协议 |
+| 上游契约 | `TextActionRelay` → `backend.complete()`；固定 `stream:false`，上游返回原生 `tool_calls` 会被明确拒绝 | `ActionRelay.stream()` → `backend.stream()`；默认native发送结构化tools/choice/parallel并接收原生调用，非流式客户端也消费同一内部流 |
+| 角色与工具定义 | 去掉原生工具/系统角色通道，system/instructions合入普通上下文，工具Schema写进文本 | native保留可表达的system/developer角色、工具Schema和strict字段；第一跳再完成网页适配 |
+| SSE体验 | 接受 `stream:true`，但上游整份完成并校验后才生成下游SSE | 开始事件先发，正文/思考持续增量；转发心跳，工具批次仍等完整校验，Responses事件序号和生命周期稳定 |
+| 历史与调用ID | 历史主要转为文本封套，不能以三个API外壳存在推断调用ID全链路保留 | native保留调用ID、结果ID、错误标志和可表达的思考元数据；显式text也保留历史关联 |
+| 原有安全检查 | 已有白名单、JSON Schema、大小限制及校验后交付，不应描述为原版“没有校验” | 在原有边界上强化严格JSON、重复键/非有限数、多封套、ID、choice/并行限制和完整终态；错误不靠选取最后一个可解析封套掩盖 |
+| 工具表达范围 | 普通function为主要适配路径；内部custom类型不等于各入口完整支持custom/namespace | 支持custom text包装和Responses namespace；custom grammar及未实现的托管工具明确拒绝，不宣称供应商全兼容 |
+| 重试归属 | 文本封套纠错在第二跳，原作者默认额外1次；不是第一跳当前的两类预算 | native第二跳不重试生成，由第一跳处理8/3/900；显式text才使用第二跳序列化预算（当前默认额外2次），不自动降级 |
+| 错误与资源预算 | 上游主要报告HTTP状态/坏JSON，非流式读取整份响应；大小约束主要检查完整文本 | 安全保留第一跳message/type/code并限长脱敏；消费时限制正文、思考、调用和未闭合SSE事件；缺终态/断流明确失败，不发成功结束 |
+| 附件、思考和搜索 | 已透传图片/文件，映射思考开关与网页搜索，不能列为当前首次支持 | 延续透传与功能映射；真正附件处理仍在第一跳，不新增本地工具执行权 |
+| Responses状态 | 没有实现可恢复服务端response存储；接收或忽略字段不能证明功能存在 | 明确拒绝previous_response_id、item_reference、store=true等；仍要求完整历史，不把“不支持”包装为成功 |
+
+源码依据：原版 [`README`](https://github.com/negativegluon/genai2agent-relay/blob/dbb8f65841345704b84c5dd368190277dcdd5737/README.md)明确说明buffered SSE；[`UpstreamClient.complete`](https://github.com/negativegluon/genai2agent-relay/blob/dbb8f65841345704b84c5dd368190277dcdd5737/relay/upstream.py)固定非流式且拒绝原生调用。当前对应 [`ActionRelay`](https://github.com/FrozenYears/genai2agent-relay/blob/4a137bca3b8fcf39594db83b3c016eddb73b9797/relay/engine.py)、[`UpstreamClient.stream`](https://github.com/FrozenYears/genai2agent-relay/blob/4a137bca3b8fcf39594db83b3c016eddb73b9797/relay/upstream.py)、[`relay/streaming.py`](https://github.com/FrozenYears/genai2agent-relay/blob/4a137bca3b8fcf39594db83b3c016eddb73b9797/relay/streaming.py)及[`relay/actions.py`](https://github.com/FrozenYears/genai2agent-relay/blob/4a137bca3b8fcf39594db83b3c016eddb73b9797/relay/actions.py)。
+
+### 5.5 本地重构前已经做过什么
+
+这部分属于原作者版之后、native重构之前的先行改进，不应再次当成当前新增：
+
+- 第一跳本地Windows线已完善action封套、引用/控制标记处理、工具结果提示及Kimi K3 XTML解析，旧实现仍保留多个宽松fallback。Windows启动与缓存隔离属于本地部署工作；Pixi本身原作者已使用。
+- 第二跳个人fork `main@6b02115` 已提高文本重试预算并补充JSON位置/Schema诊断、截断拒绝及空回复继续。本地重构前又包含引用/标记保护和工具结果提示等修复，但核心仍为 `TextActionRelay.run → backend.complete()` 文本路径，不是native-first。
+- 当前分支随后先迁移结构化传输/流式和严格整批交付，再补安全错误传播、累计deadline、空继续/工具纠错，最后提取通用agent监督器。监督器是额外工作流，不是原作者relay内置的任务执行器；旧长期验收脚本也曾自动提交显式反馈，不能说此前全靠人工逐轮诊断。
+
+本地冻结源码可分别查阅第一跳 [`e682010/tools/parsing.py`](https://github.com/FrozenYears/shanghaitech-genai2api/blob/e682010d1acff9e0ee194d2685e73490e2369ecc/tools/parsing.py)、第二跳fork [`6b02115/relay/engine.py`](https://github.com/FrozenYears/genai2agent-relay/blob/6b02115ea3bdaba6e803223fd3e5af46d73104ba/relay/engine.py)与重构前 [`5d3bd12/relay/engine.py`](https://github.com/FrozenYears/genai2agent-relay/blob/5d3bd12855269e9b6e901dc87465f5ca11f96157/relay/engine.py)；当前监督入口为 [`supervise.py`](validation/native-first-endurance/supervise.py)。
+
+### 5.6 迁移收益、代价与没有改变的边界
+
+- **收益**：减少两跳间有损文本转换，保留角色/调用关联，尽早交付安全增量，错误可归因，未交付的模型协议错误可有界恢复；任务是否完成由独立验收而非正常stop判断。
+- **兼容代价**：过去能被猜测修好的裸JSON、Python字面量或畸形参数现在会被拒绝或要求模型重新生成。服务端状态、grammar等“不支持”不再靠忽略字段维持表面成功；完整工具批次仍需等待，恢复会增加请求数和耗时。
+- **升级要求**：默认native需要两个仓库一起升级。旧纯文本backend若继续使用，必须显式选择text；没有保留旧 `TextActionRelay`/`complete()` 扩展接口的自动兼容层，自定义backend需迁移到stream接口。
+- **没有改变**：只有客户端执行本地工具；两个代理没有文件操作授权或OS沙箱，也没有服务端任务会话存储。学校网页仍是最终上游，原生输出解析和两跳结构化传输均不能证明网页开放了标准函数输入。
+- **验证边界**：本次新增的是冻结源码对照文档，不重启服务、不重跑模型。第十节的既有长测说明当前特定任务可以自动恢复完成，不能证明比原作者版普遍更快/更准，也不是官方API等价测试。
+
 
 ## 6. 不能承诺的边界与证据口径
 
@@ -175,6 +231,14 @@ pixi run serve --empty-continuations 8 --tool-repair-attempts 3 --tool-request-t
 - 用量为本地文本估算，不是供应商真实计费量，也不包含准确视觉 token。精确采样、推理档位与预算不能因接收了某字段就宣称网页支持。
 - 严格 Schema 只能证明结构符合声明，不能证明命令安全、复制内容正确或任务完成。重要写入仍须客户端实际运行、独立回读/哈希核验，长文件优先局部编辑。
 - 本文前六节是当前源码与协议边界记录；第七至九节是此前部署和长测历史。旧版结果不自动证明当前版本稳定；本轮源码、真实 HTTP 故障注入与自然模型工作结果必须分别记录。
+
+### “接近官方 API”的适用范围
+
+可采用的结论是：**在已验证的本地编码、文件操作和数据库任务中，配合独立验收监督器，当前链路已表现出接近标准 API 驱动 agent 的连续工作体验。** 依据是第十节保留的真实工具执行、独立验收及自动恢复记录，不是模型自报完成。
+
+不能据此宣称“大部分场景均达到官方 API 同等级可靠性”：没有官方 API 对照测试，样本也不覆盖任意业务、模型负载和所有客户端。接近的是已测场景的接入与续作体验，不是网页上游原生函数输入、生成端 Schema 约束、延迟/SLA、完整供应商状态或全部 API 能力。
+
+此结论还依赖工作流配置：第一跳负责请求级恢复，**可选监督器**才负责验收失败、计划停滞和已交付内容后的新回合续作；未启用它的普通客户端不会自动获得同样的任务级恢复。任何层的预算或安全边界耗尽都可明确失败，不承诺无限成功。
 
 ## 7. 历史正式部署与长时工作结论（预算升级前）
 

@@ -3,9 +3,10 @@
 ## main 发布入口与定向停服（2026-10-25）
 
 - 两仓库 README 的 Windows 安装命令直接展开，移除 Windows 的 details/summary 标签；其余客户端与附件折叠说明保留。安装命令和当前文档链接改用 FrozenYears 的 main，不再要求用户检出开发分支。
-- 获取两个 origin 的最新引用。relay 本地/远端 main 均为工作分支祖先；根仓库本地 main 另有4个 Windows 支持提交，合并需保留它们，不重置、不强推。
+- 获取两个origin的最新引用后，relay快进合入main；根仓库以合并提交`ef2cfab`保留原main的4个Windows支持提交。仅pixi.lock冲突，逐项保留工作分支已有的Windows依赖记录；解决后锁文件与工作分支逐字节一致，`pixi lock --check --dry-run --offline`确认无需变更，没有安装或升级环境。
 - 定向停止工具登记的 `GenaiFirstHopAutoRecovery` 与 `GenaiRelayAutoRecovery` 进程树。Windows 项目进程、31100/31110及旧临时端口31200/31210均无残留；Ubuntu-24.04的用户/系统GenAI单元及相关进程均未发现运行项。
 - 对比停服前后快照，79个其他Windows监听项全部仍在；没有批量结束Python、关闭WSL、停止其他Windows/systemd服务或修改其启动配置。
+- 已验证两个仓库所有本地分支及origin分支均为当前main的祖先，没有重置或强推。合并后使用现有隔离环境运行检查：第一跳562项通过，relay89项及259个子测试通过；没有重启反代或重跑长期模型任务。
 
 ## README 内容回填与两跳职责说明（2026-10-25）
 

@@ -70,7 +70,7 @@ def split_history_messages(messages):
 
 def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token=None, upstream_options=None,
                       recover_empty=False, tools=None, tool_choice=None, parallel_tool_calls=True):
-    """工具纠错开启时整代暂存；各代共用心跳、取消和时限窗口。"""
+    """逐代原子校验；空继续和未交付坏调用纠错共用一个心跳、取消和时限窗口。"""
     empty_budget = config.empty_continuations if recover_empty else 0
     repair_budget = config.tool_repair_attempts if tools else 0
     timeout = config.tool_request_timeout_seconds if recover_empty or tools else None
@@ -88,8 +88,6 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
             raw_nonempty = False
             raw_empty_stop = False
             delivered = False
-            # 思考或正文可能先于坏调用到达；校验前交付会让本代无法安全纠错。
-            pending = [] if repair_budget else None
 
             def raw_events():
                 nonlocal raw_nonempty, raw_empty_stop
@@ -108,12 +106,6 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
                 for event in events:
                     if control.cancelled.is_set():
                         return
-                    if pending is not None:
-                        if event["type"] == "delta":
-                            pending.append(event)
-                            continue
-                        if event["type"] == "done":
-                            yield from pending
                     if event["type"] == "delta" and (event.get("content") or event.get("reasoning")):
                         delivered = True
                     if event["type"] != "error":
@@ -423,7 +415,7 @@ def _chat_finish_reason(upstream_reason):
 
 def stream_genai_response(chat_info, messages, model, max_tokens, config, upstream_options=None,
                           tools=None, tool_choice=None, parallel_tool_calls=True):
-    """Chat 流先发角色；正文交付时机由请求级工具校验决定。"""
+    """Chat 流先发角色，安全正文实时交付，工具整批校验后交付。"""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(datetime.now().timestamp())
     prompt_tokens = estimate_messages_tokens(messages)

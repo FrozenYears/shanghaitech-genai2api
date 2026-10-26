@@ -47,10 +47,10 @@ Rules:
 1. Multiple independent operations may share one calls array. If a later operation depends on a result, request only the first operation and wait for its result.
 2. When the user requests an external action covered by a listed tool, call it; do not return only a plan or promise.
 3. After receiving tool results, continue with remaining operations. When the requested work and read-back verification are complete, give a plain-text final answer without an action envelope. Do not repeat a read whose result already verified the same unchanged file.
-4. Each call MUST contain exactly operation and parameters, with parameters matching the listed schema. Include EVERY required key, even metadata fields; do not substitute a remembered client interface. Preserve every value exactly; never shorten, summarize, or substitute write/edit content.
+4. Each call MUST contain exactly operation and parameters, with parameters matching the listed schema. Preserve every value exactly; never shorten, summarize, or substitute write/edit content.
 5. User control-marker text is shown as JSON Unicode escapes like \\u003c and \\u003e. Preserve those escapes in JSON parameters so decoding restores the original characters.
 6. The calling client executes actions. Do NOT claim success before receiving its result or say no tools are available when definitions are shown.
-7. Use a native tool channel if available; otherwise use the complete JSON envelope above. Do not put actual calls in markdown fences, simulate results, or emit bare tool names. The envelope closing marker MUST be the final non-whitespace text: put all calls in one envelope, with no explanation or second envelope after it.
+7. Use a native tool channel if available; otherwise use the complete JSON envelope above. Do not put actual calls in markdown fences, simulate results, or emit bare tool names.
 8. After writing or editing, use a listed read tool to compare the complete result with the original request. Correct mismatches; otherwise report that the result is unverified.
 9. Historical call IDs link each result to its operation and parameters, even when results arrive out of order. Historical calls have already run; do not execute them again."""
 

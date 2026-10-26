@@ -127,46 +127,16 @@ def test_undelivered_invalid_batch_repairs_to_one_call(monkeypatch, protocol, st
 
 @pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("prefix", ["content", "reasoning"])
-@pytest.mark.parametrize("failure", ["bad_json", "missing_i", "trailing_text"])
-def test_prefixed_invalid_batch_repairs_without_leaking_rejected_generation(monkeypatch, protocol, stream, prefix, failure):
-    parameters = {**PARAMETERS, "i": "Updating the fixture"}
-    valid = "@@ACTION@@" + json.dumps({"calls": [{"operation": "edit", "parameters": parameters}]}) + "@@END_ACTION@@"
-    bad = valid
-    if failure == "bad_json":
-        bad = '@@ACTION@@{"calls":invalid}@@END_ACTION@@'
-    elif failure == "missing_i":
-        bad = "@@ACTION@@" + json.dumps({"calls": [{"operation": "edit", "parameters": PARAMETERS}]}) + "@@END_ACTION@@"
-    else:
-        bad += "\nrejected-tail"
-    rejected = generation(content=("rejected-prose " if prefix == "content" else "") + bad,
-                          reasoning="rejected-reasoning" if prefix == "reasoning" else "")
-    requests_seen, _ = patch_generations(monkeypatch, [
-        rejected, generation(content="Validated prose. " + valid, reasoning="Validated reasoning."),
-    ])
-    path, body = request_body(protocol, stream)
-    tool = body["tools"][0]["function"] if protocol == "chat" else body["tools"][0]
-    tool["name"] = "edit"
-    schema = tool["input_schema" if protocol == "messages" else "parameters"]
-    schema["properties"]["i"] = {"type": "string"}
-    schema["required"].append("i")
-    response = create_app(Config(Token(), 0, None, False)).test_client().post(path, json=body)
-    assert calls_from(response, protocol, stream) == [parameters]
-    visible = response.get_data(as_text=True)
-    assert "rejected-" not in visible
-    assert "Validated prose." in visible and "Validated reasoning." in visible
-    assert len(requests_seen) == 2
-    assert requests_seen[1]["messages"] == requests_seen[0]["messages"]
-
-
-@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
-@pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("kind", ["network", "length", "native_length", "upstream_error"])
+@pytest.mark.parametrize("kind", ["content", "reasoning", "network", "length", "native_length", "upstream_error"])
 def test_unsafe_or_failed_generation_is_not_replayed(monkeypatch, protocol, stream, kind):
     bad = generation(content=action({"content": "hidden"}))
-    if kind == "network":
-        bad = generation(content="uncommitted-prose " + action(PARAMETERS), reasoning="uncommitted-reasoning",
-                         failure=requests.exceptions.ChunkedEncodingError("broken transport"))
+    expected = "tool_arguments_invalid"
+    if kind == "content":
+        bad["content"] = "Already delivered prose. " + bad["content"]
+    elif kind == "reasoning":
+        bad["reasoning_content"] = "Already delivered reasoning."
+    elif kind == "network":
+        bad["failure"] = requests.exceptions.ChunkedEncodingError("broken transport")
         expected = "upstream_stream_error"
     elif kind == "length":
         bad = generation(content='@@ACTION@@{"calls":[', finish="length")
@@ -182,7 +152,6 @@ def test_unsafe_or_failed_generation_is_not_replayed(monkeypatch, protocol, stre
     response = create_app(Config(Token(), 0, None, False)).test_client().post(path, json=body)
     assert error_from(response, stream)["code"] == expected
     assert len(requests_seen) == 1
-    assert "uncommitted-" not in response.get_data(as_text=True)
 
 
 @pytest.mark.parametrize("budget", [0, 1, 3])
@@ -281,35 +250,13 @@ def test_repair_feedback_never_echoes_model_parameter_values_or_keys(monkeypatch
         assert secret not in feedback and secret not in caplog.text
 
 
-def test_auto_plain_text_plan_is_final_without_an_action_requirement(monkeypatch):
+@pytest.mark.parametrize("required", [False, True])
+def test_plain_text_plan_is_not_replayed_even_with_tools(monkeypatch, required):
     requests_seen, _ = patch_generations(monkeypatch, [generation(content="I plan to inspect the file.")])
     events = list(genai.iter_genai_stream("question", [], "model", 1000, Config(Token(), 0, None, False),
-                                        tools=TOOLS))
+                                        tools=TOOLS, tool_choice="required" if required else "auto"))
     assert len(requests_seen) == 1
-    assert "".join(event.get("content", "") for event in events) == "I plan to inspect the file."
-    assert events[-1]["type"] == "done" and events[-1]["tool_calls"] == []
-
-
-def test_required_tool_repairs_a_plan_before_any_delivery(monkeypatch):
-    requests_seen, _ = patch_generations(monkeypatch, [
-        generation(content="uncommitted-plan"), generation(content=action(PARAMETERS)),
-    ])
-    events = list(genai.iter_genai_stream("question", [], "model", 1000, Config(Token(), 0, None, False),
-                                        tools=TOOLS, tool_choice="required"))
-    assert len(requests_seen) == 2
-    assert events[-1]["type"] == "done" and len(events[-1]["tool_calls"]) == 1
-    assert not any(event.get("content") == "uncommitted-plan" for event in events)
-
-
-def test_disabling_repair_keeps_visible_prefix_and_does_not_retry(monkeypatch):
-    requests_seen, _ = patch_generations(monkeypatch, [
-        generation(content="Visible prefix. " + action({"content": "invalid"})),
-        generation(content=action(PARAMETERS)),
-    ])
-    config = Config(Token(), 0, None, False, tool_repair_attempts=0)
-    events = list(genai.iter_genai_stream("question", [], "model", 1000, config, tools=TOOLS))
-    assert events[0] == {"type": "delta", "content": "Visible prefix. "}
-    assert events[-1]["code"] == "tool_arguments_invalid" and len(requests_seen) == 1
+    assert events[-1]["type"] == ("error" if required else "done")
 
 
 @pytest.mark.parametrize("first", ["empty", "bad"])

@@ -2,30 +2,34 @@
 
 把上海科技大学 GenAI 网页模型接入本地 agent，提供 Chat Completions、Messages 与 Responses 兼容接口。
 
-[快速开始](#快速开始) · [客户端配置](#客户端配置) · [重构对比](#与重构前的区别) · [实测](#模型实测) · [详细文档](docs/README.md)
+## 目录
+
+- [部署与接入](#部署与接入)
+  - [快速开始](#快速开始)
+  - [Windows 与启动参数](#windows-与启动参数)
+  - [客户端配置](#客户端配置)
+- [功能与设计](#功能与设计)
+  - [两跳分工](#两跳分工)
+  - [网页模型如何调用工具](#网页模型如何调用工具)
+  - [工具、恢复与边界](#工具恢复与边界)
+  - [图片、文档、搜索与思考](#图片文档搜索与思考)
+  - [已知限制](#已知限制)
+  - [与重构前的区别](#与重构前的区别)
+- [实测与资料](#实测与资料)
+  - [模型实测](#模型实测)
+  - [更多文档](#更多文档)
+
+## 部署与接入
 
 > [!NOTE]
 > 两个仓库均使用 `main` 分支，安装时保持版本一致。
 > 需学校 GenAI 网页权限，无需申请模型厂商或学校独立 API Key。
 
-```mermaid
-flowchart LR
-    A[本地 agent] --> R["第二跳 · 31110<br/>genai2agent-relay"]
-    R --> F["第一跳 · 31100<br/>shanghaitech-genai2api"]
-    F --> W[学校 GenAI 网页后端]
-```
-
-两跳名称沿用项目约定：客户端请求先到第二跳 relay，再到第一跳。
-
-- 本仓库：网页登录、附件处理、网页请求与严格工具解析。
-- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/main)：协议转换，结构化工具与 SSE 转发。
-- 本地 agent：执行工具、读写文件、运行命令；代理不执行这些操作。
-
-## 快速开始
+### 快速开始
 
 需 Git、[Pixi](https://pixi.sh/) 与 [uv](https://docs.astral.sh/uv/)。以下为 Bash 命令（Linux / WSL）；Windows 命令直接列在下方。
 
-### 1. 第一跳（shanghaitech-genai2api）
+#### 1. 第一跳（shanghaitech-genai2api）
 
 ```bash
 git clone --branch main https://github.com/FrozenYears/shanghaitech-genai2api.git
@@ -59,7 +63,7 @@ pixi run serve
 > 第一跳当前监听 `0.0.0.0`，不支持通过 `HOST` 改为回环地址。
 > 请设置本地 Key 并限制网络访问；切勿暴露公网或提交 `.env`。
 
-### 2. 第二跳（genai2agent-relay）
+#### 2. 第二跳（genai2agent-relay）
 
 在两仓库的父目录下另开终端：
 
@@ -70,7 +74,7 @@ uv pip install --python .venv/bin/python -e .
 cp .env.example .env
 ```
 
-编辑 relay 的 `.env`，并保持两跳同时运行：
+编辑 relay 的 `.env`，并保持两个服务同时运行：
 
 ```dotenv
 UPSTREAM_BASE_URL=http://127.0.0.1:31100
@@ -91,7 +95,7 @@ PORT=31110
 | `API_KEY` = `UPSTREAM_API_KEY` | relay 访问第一跳，两处值相同 |
 | `RELAY_API_KEY` | 客户端访问 relay，另设一个值 |
 
-### Windows 与启动参数
+#### Windows 与启动参数
 
 - 复制配置：`Copy-Item .env.example .env`。
 - 第一跳启动：`pwsh -File run-windows.ps1`，脚本会安装 Pixi 环境并使用本地缓存。
@@ -107,7 +111,7 @@ pixi run serve --port 31100 --api-format both --empty-continuations 8 --tool-rep
 
 全部参数可用 `pixi run serve --help` 查看；`HOST` 只控制 relay，不控制第一跳监听地址。
 
-### 3. 检查连接
+#### 3. 检查连接
 
 ```bash
 curl -fsS http://127.0.0.1:31100/health
@@ -118,7 +122,7 @@ curl -fsS http://127.0.0.1:31110/v1/models \
 
 健康检查仅说明服务存活。请求须使用模型列表中的真实 `id`（如 `deepseek-pro`、`Kimi-k3`），代理不做别名映射。
 
-## 客户端配置
+### 客户端配置
 
 客户端 Key 填 `RELAY_API_KEY`，支持 Bearer 或 `x-api-key`。
 
@@ -131,7 +135,7 @@ curl -fsS http://127.0.0.1:31110/v1/models \
 <details>
 <summary>展开 Claude Code、Codex、omp/Pi 配置与请求示例</summary>
 
-### Claude Code
+#### Claude Code
 
 在启动 Claude Code 的同一终端设置：
 
@@ -145,7 +149,7 @@ claude
 - 若配置了子任务默认模型，也须使用平台实际存在的 ID。
 - 这是第三方协议适配，不代表 Anthropic 官方支持学校模型。[网关配置参考](https://code.claude.com/docs/en/llm-gateway-connect)
 
-### Codex CLI 与其他 Responses 客户端
+#### Codex CLI 与其他 Responses 客户端
 
 在用户级 `~/.codex/config.toml` 中配置：
 
@@ -167,14 +171,14 @@ export GENAI_RELAY_API_KEY=replace-with-relay-key
 codex
 ```
 
-客户端须发送完整历史，不使用 `previous_response_id`、`item_reference` 或 `store=true`。要求 custom grammar 或未实现托管工具的版本，需要调整工具声明或配置，不能保证只改地址就能使用。[provider 配置参考](https://developers.openai.com/codex/config-advanced/)
+客户端须发送完整历史，不要使用 `previous_response_id`、`item_reference` 或 `store=true`。若客户端要求 custom grammar 或未实现托管工具，需要调整工具声明或配置，不能保证只改地址就能用。[provider 配置参考](https://developers.openai.com/codex/config-advanced/)
 
-### omp 与 Pi
+#### omp 与 Pi
 
 - omp 使用上表的 Chat 地址。长期测试记录使用 `GenAI` provider 下的 `deepseek-pro`、`Kimi-k3`。
 - Pi 的 `@PDF` 不等于文档上传；附件延迟、超时和显式上传的区别见[Pi 实测](docs/PI_REAL_WORLD_VALIDATION.md)。
 
-### 最小流式请求
+#### 最小流式请求
 
 ```bash
 curl -N http://127.0.0.1:31110/v1/chat/completions \
@@ -185,7 +189,24 @@ curl -N http://127.0.0.1:31110/v1/chat/completions \
 
 </details>
 
-## 网页模型如何调用工具
+## 功能与设计
+
+### 两跳分工
+
+```mermaid
+flowchart LR
+    A[本地 agent] --> R["第二跳 · 31110<br/>genai2agent-relay"]
+    R --> F["第一跳 · 31100<br/>shanghaitech-genai2api"]
+    F --> W[学校 GenAI 网页后端]
+```
+
+两跳名称沿用项目约定：客户端请求先到第二跳 relay，再到第一跳。
+
+- 本仓库：网页登录、附件处理、网页请求与严格工具解析。
+- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/main)：协议转换，结构化工具与 SSE 转发。
+- 本地 agent：执行工具、读写文件、运行命令；代理不执行这些操作。
+
+### 网页模型如何调用工具
 
 网页无原生工具通道时，代理通过“文本约定 + 校验 + 客户端执行”完成调用：
 
@@ -202,7 +223,7 @@ curl -N http://127.0.0.1:31110/v1/chat/completions \
 
 模型须能遵循约定；输出格式错误将按限额纠错或直接报错。上游若直接返回结构化调用，则优先保留并校验。
 
-## 工具、恢复与边界
+### 工具、恢复与边界
 
 - 支持整批工具校验；正文与思考可流式返回，工具参数收全且校验通过后才交付。
 - 支持图片、文档、网页搜索与思考开关，格式与限制见[下方说明](#图片文档搜索与思考)。
@@ -214,7 +235,7 @@ curl -N http://127.0.0.1:31110/v1/chat/completions \
 > `native` 仅指两跳间的结构化传输，学校网页仍需文本适配。
 > 本项目不提供 Files API、Responses 服务端状态、custom grammar 或完整供应商思考状态；工具权限与隔离仍由客户端负责。
 
-## 图片、文档、搜索与思考
+### 图片、文档、搜索与思考
 
 | 功能 | 输入与处理 | 边界 |
 | --- | --- | --- |
@@ -248,7 +269,7 @@ Chat 的 `messages[].content` 可使用以下数组，需将 `...` 替换为真�
 
 </details>
 
-## 已知限制
+### 已知限制
 
 - 学校平台决定模型供应、配额、延迟和空输出；元数据与附件处理阶段的过期认证恢复仍有缺口。
 - 不支持 Responses 服务端状态、custom grammar、未实现的托管工具或 Files API；客户端需发送完整历史。
@@ -257,7 +278,7 @@ Chat 的 `messages[].content` 可使用以下数组，需将 `...` 替换为真�
 - 取消或到期会关闭已取得的响应和 socket；等待上游响应头的阻塞请求不能立即打断，也不保证远端推理同步停止。
 - Schema 合法不保证操作安全或代码正确。客户端负责授权和隔离；未启用监督器时，恢复耗尽后任务仍可能停止。
 
-## 与重构前的区别
+### 与重构前的区别
 
 原版两跳已有三协议与附件，原 relay 已有 Schema 校验。主要变化：
 
@@ -270,7 +291,9 @@ Chat 的 `messages[].content` 可使用以下数组，需将 `...` 替换为真�
 
 冻结版本、兼容代价与源码依据见[架构对照](docs/STAGE_NATIVE_FIRST.md#5-与双跳原仓库及本地重构前分支的对照)。
 
-## 模型实测
+## 实测与资料
+
+### 模型实测
 
 2026-10-25，真实 omp 经双跳完成同一套 Python/CSV/SQLite 任务，均无人工纠错：
 
@@ -287,7 +310,7 @@ Chat 的 `messages[].content` 可使用以下数组，需将 `...` 替换为真�
 - DeepSeek 在第一跳恢复空完成与坏调用；Kimi 经自动反馈恢复协议错误及只给计划的停滞。
 - 这是已有样本，非官方 API 对照或稳定性保证。[完整记录](docs/TEST_REPORT_deepseek_pro.md)
 
-## 更多文档
+### 更多文档
 
 [任务监督用法](docs/USAGE.md) · [架构](docs/STAGE_NATIVE_FIRST.md) · [工具参数](docs/TOOLS.md) · [文档索引](docs/README.md) · [变更记录](CHANGELOG.md)
 

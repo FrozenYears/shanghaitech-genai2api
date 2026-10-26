@@ -494,3 +494,20 @@ reasoning 参数      -> 三个接口各打出一条 warning
 
 - **小 `max_tokens` 可能只返回思维链**：本地预算包含思维链 token，对推理模型给 `max_tokens=64` 之类的极小值时，思维链会用完预算导致正文为空（`finish_reason=length`）。这与 OpenAI / Anthropic 推理模型把思考计入输出预算的语义一致。
 - **流式错误事件格式变更**：Chat 的流式错误从 `delta.content` 文本变成 `{"error": {...}}` 对象，依赖旧格式的客户端需要适配。
+
+## 2026-10-26：正式 Kimi 无额外反馈完整任务
+
+第一跳修复`99d12cf`重启部署到31100，relay测试版本`6e1ea98`运行于31110。真实已安装omp使用`GenAI/Kimi-k3`、`openai-completions`及正式relay地址；模型未切换。该次为自然任务，无故障注入，客户端自动重试关闭，`--max-feedback 0`，整场45分钟、单阶段1200秒；第一跳仍是8/3/900策略。
+
+```bash
+./.pixi/envs/default/python.exe -B validation/native-first-endurance/run.py run --model Kimi-k3 --stages 20 --max-feedback 0 --max-minutes 45 --stage-timeout 1200
+```
+
+实际完成金额精度、CSV、SQLite持久化/事务/迁移、分页、报表及模块重构等20个阶段。全部阶段正常结束，最终71项独立验收通过；总耗时2180.765秒，122次工具调用、90次模型请求，额外反馈与人工介入均为0，客户端未恢复协议错误为0。
+
+阶段15的第一次业务验收发现旧库迁移返回`invalid_row`，对应一次`bash`工具失败。Kimi在原prompt内修改项目，再次验收通过，未追加“继续”或监督反馈。重复工具输入计数为1，保留在原始摘要中，不将已修正的业务失败隐藏为全程无错。
+
+共享服务还处理了其他并发Kimi请求，因此不公布本次专属的第一跳空继续/纠错次数；服务窗口日志不能直接用于该归因。前一节的故障注入证明与这次自然任务分开记录，10-25的DeepSeek/Kimi数据保持原样，不作受控性能排名。
+
+公开[脱敏结果及逐阶段状态](../validation/kimi-formal-2026-10-26.json)。本地`.validation-runtime/omp-kimi-k3-l5wa2dkm/`保留摘要、会话、事件、完整生成项目、逐阶段验收，以及阶段15失败和最终通过的3组数据库；38组中间数据库按用户授权清理。原始记录、数据库和凭据不提交到远端。
+

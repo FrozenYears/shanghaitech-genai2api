@@ -1,0 +1,219 @@
+{
+  "date": "2026-10-26",
+  "scope": "Real installed omp through both formal GenAI proxies to the school webpage Kimi-k3; no official model API",
+  "tested_commits": {
+    "first_hop": "99d12cf47596be98eaeeeac4f27c86306a102461",
+    "relay": "6e1ea981b50de2c19edf4f4a79bf9776fc2a5e43"
+  },
+  "fault_injection": false,
+  "client_auto_retry": false,
+  "model": "Kimi-k3",
+  "started_at": "2026-10-26T19:24:14+0800",
+  "completed": true,
+  "elapsed_s": 2180.765,
+  "stages_passed": 20,
+  "tool_calls": 122,
+  "tool_errors": 1,
+  "model_requests": 90,
+  "repeated_tool_inputs": 1,
+  "automatic_feedback_count": 0,
+  "human_interventions": 0,
+  "passed_without_feedback": true,
+  "stop_reason": "all_planned_stages_completed",
+  "budget": {
+    "max_feedback_per_stage": 0,
+    "max_minutes": 45.0,
+    "turn_timeout_s": 1200.0
+  },
+  "identity": {
+    "model": {
+      "provider": "GenAI",
+      "id": "Kimi-k3",
+      "api": "openai-completions",
+      "baseUrl": "http://127.0.0.1:31110/v1",
+      "contextWindow": 1000000,
+      "maxTokens": 163840
+    }
+  },
+  "final_verification": {
+    "stage": 20,
+    "passed": true,
+    "assertions": 71,
+    "failures": [],
+    "failure_count": 0
+  },
+  "stages": [
+    {
+      "stage": 1,
+      "name": "decimal_money",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 2,
+      "name": "group_summary",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 3,
+      "name": "csv_ingestion",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 4,
+      "name": "sqlite_persistence",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 5,
+      "name": "atomic_import",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 6,
+      "name": "query_filters",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 7,
+      "name": "atomic_transfer",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 8,
+      "name": "reversal",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 9,
+      "name": "running_balances",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 10,
+      "name": "budget_report",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 11,
+      "name": "merge_batches",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 12,
+      "name": "csv_export",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 13,
+      "name": "reconciliation",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 14,
+      "name": "stable_pagination",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 15,
+      "name": "storage_migration",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 16,
+      "name": "module_refactor",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 17,
+      "name": "monthly_report",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 18,
+      "name": "category_relabel",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 19,
+      "name": "account_statement",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    },
+    {
+      "stage": 20,
+      "name": "daily_cashflow",
+      "passed": true,
+      "automatic_feedback_count": 0,
+      "stop_reason": "verified_completed"
+    }
+  ],
+  "protocol_errors": [],
+  "first_hop_recovery_counts": {
+    "empty_continuations": null,
+    "tool_repairs": null,
+    "reason": "Shared formal services handled concurrent Kimi traffic; service-level warning counts cannot be assigned exactly to this run."
+  },
+  "transient_business_failure": {
+    "stage": 15,
+    "tool": "bash",
+    "operation": "SQLite legacy migration",
+    "observed_error": "invalid_row",
+    "recovered_within_same_prompt": true,
+    "extra_user_feedback": 0,
+    "final_stage_passed": true
+  },
+  "retention": {
+    "raw_evidence": "Retained locally, not committed",
+    "local_directory": ".validation-runtime/omp-kimi-k3-l5wa2dkm",
+    "kept": [
+      "summary, sessions and event logs",
+      "20 stage verification records",
+      "complete generated model workspace",
+      "stage-15 failed database group and final two successful database groups"
+    ],
+    "removed_intermediate_database_groups": 38,
+    "user_approved_cleanup": true
+  },
+  "limits": [
+    "One natural 20-stage task run, not a general stability guarantee.",
+    "The 2026-10-25 DeepSeek and Kimi results are separate historical runs, not a controlled speed or accuracy comparison.",
+    "No secrets, original prompts, raw sessions, SQLite files or local authentication configuration are included in this projection."
+  ]
+}

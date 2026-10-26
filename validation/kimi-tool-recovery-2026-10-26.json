@@ -1,0 +1,106 @@
+{
+  "date": "2026-10-26",
+  "branch": "fix/kimi-tool-recovery",
+  "code_baseline": "5021553bec4653be16d2394cce3ca0a52057f96b",
+  "scope": "First-hop generation recovery; real installed omp, native relay, school GenAI webpage Kimi-k3 only",
+  "diagnosis": {
+    "reported_errors": [
+      "Action envelope contains invalid or incomplete JSON",
+      "Tool 'edit' arguments fail required at parameters; missing fields: i",
+      "Expected one complete final action envelope"
+    ],
+    "confirmed_mechanism": "validated_events emitted reasoning or prose before batch validation; iter_genai_stream set delivered and refused same-request repair even when no call from the failed generation had been delivered",
+    "historical_evidence": ".validation-runtime/omp-kimi-k3-7olxj28k/summary.json, stage 2 first attempt; corresponding omp events show reasoning and dot-only prose before the invalid-JSON terminal error",
+    "historical_limit": "The original failed action envelope is unavailable; its exact syntax defect and the newly user-reported missing i cannot be reconstructed from that historical record"
+  },
+  "fix": {
+    "buffer_each_generation_when_tool_repair_enabled": true,
+    "release_only_after_successful_validation": true,
+    "discard_failed_generation_content_and_reasoning": true,
+    "immediate_protocol_start_and_heartbeats": true,
+    "strict_json_schema_and_batch_validation_unchanged": true,
+    "no_parameter_guessing_or_partial_batch_execution": true,
+    "production_empty_continuations": 8,
+    "production_tool_repairs": 3,
+    "production_shared_deadline_seconds": 900,
+    "never_replays": ["transport errors", "premature EOF", "length truncation", "cancellation", "expired deadline", "already delivered calls"],
+    "tradeoff": "Tool-enabled requests with a positive repair budget defer prose and reasoning until the generation validates; no-tool requests and repair budget zero retain incremental delivery"
+  },
+  "regression": {
+    "before_fix": "New prefixed-invalid-batch regression returned HTTP 502 on the old implementation",
+    "after_fix_root_passed": 587,
+    "root_elapsed_seconds": 8.23,
+    "targeted_recovery_and_stream_tests_passed": 150,
+    "coverage": ["three protocols, streaming and non-streaming", "malformed JSON, missing i, trailing envelope text after reasoning or prose", "no failed-generation output leakage", "required tool choice", "zero repair budget", "cancellation, deadline, transport failure and truncation"]
+  },
+  "live_configuration": {
+    "model": {"provider": "GenAI", "id": "Kimi-k3", "api": "openai-completions"},
+    "omp_version": "18.12.6",
+    "edit_mode": "replace",
+    "omp_thinking_flag": "off",
+    "allowed_tools": ["read", "write", "edit", "glob", "grep"],
+    "empty_continuations": 0,
+    "tool_repair_attempts": 3,
+    "tool_request_timeout_seconds": 900,
+    "isolated_loopback_ports_and_omp_home": true,
+    "global_omp_config_modified": false,
+    "client_auto_retry": false,
+    "supervisor_enabled": false,
+    "official_model_api_used": false
+  },
+  "runs": [
+    {
+      "kind": "fault_injection_then_real_school_model",
+      "evidence": ".validation-runtime/kimi-tool-recovery/run-20261026-185955-c6321860",
+      "passed": true,
+      "prompt_count": 1,
+      "automatic_user_feedback_count": 0,
+      "human_feedback_count": 0,
+      "injected_generations": 3,
+      "same_request_tool_repairs": 3,
+      "injected_error_codes": ["tool_call_parse_error", "tool_arguments_invalid", "tool_call_parse_error"],
+      "first_hop_http_requests": 5,
+      "real_school_generations": 5,
+      "tool_counts": {"write": 1, "edit": 1, "read": 2},
+      "agent_elapsed_seconds": 21.484,
+      "failed_generation_prefix_not_delivered": true,
+      "unique_call_ids_and_exact_mutation_counts": true,
+      "exact_file_bytes_ast_behavior_and_readbacks_passed": true,
+      "limit": "The first three failing generations were deliberately injected; this is not a natural model-recovery endurance result"
+    },
+    {
+      "kind": "natural_dependent_tool_task",
+      "evidence": ".validation-runtime/kimi-tool-recovery/run-20261026-190046-216c48a0",
+      "passed": true,
+      "prompt_count": 1,
+      "automatic_user_feedback_count": 0,
+      "human_feedback_count": 0,
+      "injected_generations": 0,
+      "observed_same_request_tool_repairs": 0,
+      "first_hop_http_requests": 7,
+      "real_school_generations": 7,
+      "tool_counts": {"write": 1, "edit": 2, "read": 3},
+      "agent_elapsed_seconds": 30.984,
+      "execution_order": ["write", "read", "edit", "read", "edit", "read"],
+      "unique_call_ids_and_exact_mutation_counts": true,
+      "exact_file_bytes_ast_behavior_and_readbacks_passed": true,
+      "limit": "No natural protocol failure occurred in this short task; it does not prove arbitrary-task or unattended endurance stability"
+    }
+  ],
+  "service_scope": {
+    "formal_first_hop_port": 31100,
+    "formal_relay_port": 31110,
+    "formal_service_restart_or_stop_commands": 0,
+    "formal_listener_owners_unchanged_after_smoke": true,
+    "temporary_servers_closed_on_exit": true,
+    "relay_code_or_config_changed": false
+  },
+  "retention": {
+    "user_choice": "Keep core evidence and clean temporary environments",
+    "kept": ["two run summaries", "omp event logs", "omp sessions", "verified fixture files"],
+    "removed": ["temporary smoke script", "isolated models and settings", "temporary HOME and caches"],
+    "older_validation_evidence_unchanged": true
+  },
+  "external_reference": "https://github.com/pydantic/pydantic-ai/blob/main/tests/test_tools.py",
+  "external_evidence_limit": "General validation-feedback pattern only; no exact upstream patch was identified or copied"
+}

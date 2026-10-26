@@ -198,26 +198,43 @@ def test_waiting_stream_sends_heartbeat_and_close_releases_http_response(monkeyp
     assert producer_stopped.wait(1)
 
 
-def test_native_call_not_emitted_until_upstream_completion(monkeypatch):
-    completed = []
+def test_unvalidated_tool_prefix_keeps_heartbeats_and_cancellation(monkeypatch):
+    released = threading.Event()
+    producer_stopped = threading.Event()
+    requests_seen = []
 
-    def source(*args, **kwargs):
-        yield {"type": "delta", "content": "safe prose"}
-        assert not completed
-        completed.append(True)
-        yield {"type": "done", "finish_reason": "tool_calls", "tool_calls": [{
-            "id": "call_waited", "type": "function", "function": {"name": "Bash", "arguments": '{"command":"pwd"}'},
-        }]}
+    class Response:
+        status_code = 200
 
-    monkeypatch.setattr(genai, "iter_genai_stream", source)
-    stream = stream_genai_response("run", [{"role": "user", "content": "run"}], "chatglm", 100, DummyConfig(),
+        def iter_lines(self, **kwargs):
+            try:
+                yield b'data: {"choices":[{"delta":{"content":"Pending prose.","reasoning_content":"Pending analysis."}}]}'
+                released.wait(5)
+                yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            finally:
+                producer_stopped.set()
+
+        def close(self):
+            released.set()
+
+    def post(*args, **kwargs):
+        requests_seen.append(True)
+        return Response()
+
+    monkeypatch.setattr(genai.model_registry, "get_root_ai_type", lambda *args: "xinference")
+    monkeypatch.setattr(genai.requests, "post", post)
+    heartbeat = genai.heartbeat_events
+    monkeypatch.setattr(genai, "heartbeat_events", lambda factory, **kwargs: heartbeat(factory, interval=0.01, **kwargs))
+    stream = stream_genai_response("run", [{"role": "user", "content": "run"}], "model", 100, DummyConfig(),
         tools=[{"type": "function", "function": {"name": "Bash", "parameters": {"type": "object"}}}])
-    assert '"role": "assistant"' in next(stream)
-    assert "safe prose" in next(stream)
-    assert completed == []
-    assert "call_waited" in next(stream)
-    assert completed == [True]
-    stream.close()
+    try:
+        assert '"role": "assistant"' in next(stream)
+        assert next(stream) == ": keep-alive\n\n"
+        assert not released.is_set()
+    finally:
+        stream.close()
+    assert released.is_set() and producer_stopped.wait(1)
+    assert requests_seen == [True]
 
 
 def test_no_tools_keeps_action_text_for_explicit_text_mode(monkeypatch):
@@ -351,8 +368,6 @@ def test_tool_deadline_and_cancellation_close_socket_and_drop_unvalidated_calls(
     assert requested == [True]
     assert "[DONE]" not in "".join(chunks)
     assert not any(chunk.get("choices", [{}])[0].get("delta", {}).get("tool_calls") for chunk in _data_chunks(chunks))
-    if prefix == "text":
-        assert "Already visible prose" in "".join(chunks)
 
 
 def test_timeout_before_response_headers_cleans_late_response_without_restarting(monkeypatch):

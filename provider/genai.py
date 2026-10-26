@@ -130,7 +130,8 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
                                        model, empty_count, empty_budget, repair_count, repair_budget)
                         break
                     feedback = event.get("repair_feedback")
-                    if tools and feedback and not delivered:
+                    # repair_feedback只在正常终态且工具整批未交付时产生；已显示正文不撤回。
+                    if tools and feedback:
                         if repair_count >= repair_budget:
                             yield {key: value for key, value in {
                                 **event, "message": event["message"] + f"; tool repair recovery exhausted ({repair_count}/{repair_budget})"
@@ -140,6 +141,8 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
                         question = chat_info + (
                             f"\n\n本请求第 {repair_count}/{repair_budget} 次工具协议纠错。"
                             "本次坏调用整批尚未交付给客户端，也没有执行；没有工具结果可用。"
+                            "此前流式显示的正文或思考只是生成进度，不是本批工具的执行回执；"
+                            "保留这些已显示内容，只纠正本次尚未交付的工具批次，不必重复说明。"
                             f"安全校验错误：{feedback}"
                             "保留原问题、完整原历史、工具 schema、tool_choice 和并行约束，重新生成完整合法批次或允许的最终答复。"
                             "不要猜测或自动补齐未知参数，不要虚构执行结果，不要重复历史已经完成的操作。"

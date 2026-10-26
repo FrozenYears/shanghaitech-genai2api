@@ -127,15 +127,48 @@ def test_undelivered_invalid_batch_repairs_to_one_call(monkeypatch, protocol, st
 
 @pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("kind", ["content", "reasoning", "network", "length", "native_length", "upstream_error"])
+@pytest.mark.parametrize("prefix", ["content", "reasoning"])
+@pytest.mark.parametrize("failure", ["bad_json", "missing_i", "trailing_text"])
+def test_visible_progress_does_not_prevent_undelivered_tool_repair(monkeypatch, protocol, stream, prefix, failure):
+    parameters = {**PARAMETERS, "i": "Updating the fixture"}
+    valid = "@@ACTION@@" + json.dumps({"calls": [{"operation": "edit", "parameters": parameters}]}) + "@@END_ACTION@@"
+    if failure == "bad_json":
+        bad = '@@ACTION@@{"calls":invalid}@@END_ACTION@@'
+    elif failure == "missing_i":
+        bad = "@@ACTION@@" + json.dumps({"calls": [{"operation": "edit", "parameters": PARAMETERS}]}) + "@@END_ACTION@@"
+    else:
+        bad = valid + "\nextra text after envelope"
+    requests_seen, _ = patch_generations(monkeypatch, [
+        generation(content=("Visible progress. " if prefix == "content" else "") + bad,
+                   reasoning="Visible analysis." if prefix == "reasoning" else ""),
+        generation(content=valid),
+    ])
+    path, body = request_body(protocol, stream)
+    tool = body["tools"][0]["function"] if protocol == "chat" else body["tools"][0]
+    tool["name"] = "edit"
+    schema = tool["input_schema" if protocol == "messages" else "parameters"]
+    schema["properties"]["i"] = {"type": "string"}
+    schema["required"].append("i")
+    response = create_app(Config(Token(), 0, None, False)).test_client().post(path, json=body)
+    assert calls_from(response, protocol, stream) == [parameters]
+    visible = response.get_data(as_text=True)
+    progress = visible
+    if protocol == "responses" and stream:
+        event_type = "response.output_text.delta" if prefix == "content" else "response.reasoning_summary_text.delta"
+        events = [json.loads(line[6:]) for line in visible.splitlines() if line.startswith("data: ")]
+        progress = "".join(event.get("delta", "") for event in events if event.get("type") == event_type)
+    assert progress.count("Visible progress." if prefix == "content" else "Visible analysis.") == 1
+    assert "@@ACTION@@" not in visible and "extra text after envelope" not in visible
+    assert len(requests_seen) == 2
+    assert requests_seen[1]["messages"] == requests_seen[0]["messages"]
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("kind", ["network", "length", "native_length", "upstream_error"])
 def test_unsafe_or_failed_generation_is_not_replayed(monkeypatch, protocol, stream, kind):
     bad = generation(content=action({"content": "hidden"}))
-    expected = "tool_arguments_invalid"
-    if kind == "content":
-        bad["content"] = "Already delivered prose. " + bad["content"]
-    elif kind == "reasoning":
-        bad["reasoning_content"] = "Already delivered reasoning."
-    elif kind == "network":
+    if kind == "network":
         bad["failure"] = requests.exceptions.ChunkedEncodingError("broken transport")
         expected = "upstream_stream_error"
     elif kind == "length":
@@ -250,13 +283,22 @@ def test_repair_feedback_never_echoes_model_parameter_values_or_keys(monkeypatch
         assert secret not in feedback and secret not in caplog.text
 
 
-@pytest.mark.parametrize("required", [False, True])
-def test_plain_text_plan_is_not_replayed_even_with_tools(monkeypatch, required):
+def test_auto_plain_text_plan_is_final_without_an_action_requirement(monkeypatch):
     requests_seen, _ = patch_generations(monkeypatch, [generation(content="I plan to inspect the file.")])
-    events = list(genai.iter_genai_stream("question", [], "model", 1000, Config(Token(), 0, None, False),
-                                        tools=TOOLS, tool_choice="required" if required else "auto"))
+    events = list(genai.iter_genai_stream("question", [], "model", 1000, Config(Token(), 0, None, False), tools=TOOLS))
     assert len(requests_seen) == 1
-    assert events[-1]["type"] == ("error" if required else "done")
+    assert events[-1]["type"] == "done" and events[-1]["tool_calls"] == []
+
+
+def test_required_tool_repairs_after_visible_plan_without_repeating_it(monkeypatch):
+    requests_seen, _ = patch_generations(monkeypatch, [
+        generation(content="Visible plan."), generation(content=action(PARAMETERS)),
+    ])
+    events = list(genai.iter_genai_stream("question", [], "model", 1000, Config(Token(), 0, None, False),
+                                        tools=TOOLS, tool_choice="required"))
+    assert len(requests_seen) == 2 and events[-1]["type"] == "done"
+    assert len(events[-1]["tool_calls"]) == 1
+    assert sum(event.get("content") == "Visible plan." for event in events) == 1
 
 
 @pytest.mark.parametrize("first", ["empty", "bad"])

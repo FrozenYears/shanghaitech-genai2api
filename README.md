@@ -22,7 +22,7 @@
 ## 部署与接入
 
 > [!NOTE]
-> 两个仓库均使用 `main` 分支，安装时保持版本一致。
+> 当前为 `fix/streaming-repair-image-history` 候选分支；`main` 保持实时输出回退版。测试新方案时，两仓库均检出同名候选分支。
 > 需学校 GenAI 网页权限，无需申请模型厂商或学校独立 API Key。
 
 ### 快速开始
@@ -32,8 +32,8 @@
 #### 1. 第一跳（shanghaitech-genai2api）
 
 ```bash
-git clone --branch main https://github.com/FrozenYears/shanghaitech-genai2api.git
-git clone --branch main https://github.com/FrozenYears/genai2agent-relay.git
+git clone --branch fix/streaming-repair-image-history https://github.com/FrozenYears/shanghaitech-genai2api.git
+git clone --branch fix/streaming-repair-image-history https://github.com/FrozenYears/genai2agent-relay.git
 cd shanghaitech-genai2api
 pixi install
 cp .env.example .env
@@ -203,7 +203,7 @@ flowchart LR
 两跳名称沿用项目约定：客户端请求先到第二跳 relay，再到第一跳。
 
 - 本仓库：网页登录、附件处理、网页请求与严格工具解析。
-- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/main)：协议转换，结构化工具与 SSE 转发。
+- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/fix/streaming-repair-image-history)：协议转换，结构化工具与 SSE 转发。
 - 本地 agent：执行工具、读写文件、运行命令；代理不执行这些操作。
 
 ### 网页模型如何调用工具
@@ -230,6 +230,7 @@ flowchart LR
 - 第一跳默认最多额外空继续 **8 次**、未交付坏调用纠错 **3 次**，共用 **900 秒**请求窗口；计数不重置，relay native 不叠加重试。
 - 已显示的正文/思考保留，不撤回或隐藏。正常结束后发现坏工具批次时，只纠错尚未交付的批次；可能显示各次生成进度。已交付工具、断流、网络错误、截断、取消或到期不重放，预算耗尽返回真实错误。
 - [可选 omp 监督器](docs/USAGE.md#可选的-omp-任务监督)根据独立验收自动反馈续作；预算耗尽即保存状态退出，不自动接管其它客户端。
+- [本分支验收](validation/streaming-images-2026-10-26.json)：593 项回归，以及真实 Kimi 多次读 WebP、同会话报错后不清历史继续；不替代旧版20阶段记录。
 
 > [!IMPORTANT]
 > `native` 仅指两跳间的结构化传输，学校网页仍需文本适配。
@@ -239,7 +240,7 @@ flowchart LR
 
 | 功能 | 输入与处理 | 边界 |
 | --- | --- | --- |
-| 图片 | URL、data URL 或协议图片块；历史图片保留在原轮次 | 内联单张小于 20 MiB；效果与延迟取决于上游 |
+| 图片 | URL、data URL 或协议图片块；内联静态 WebP 无损转 PNG，图片保留在原轮次 | 原图及转换后均小于 20 MiB；动画 WebP 明确拒绝，不静默丢帧；远程 URL 仍由上游读取 |
 | 文档 | 内联 base64、data URL 或 HTTP(S) URL；当前轮上传与聊天共用会话 | 小于 10 MiB；历史文档用平台解析文本恢复，扫描件效果不保证 |
 | 搜索 | `web_search: true` 或受支持的搜索声明，映射为网页搜索 | 正文来源与补充结果分别标注，不实现厂商托管搜索工具的完整流程 |
 | 思考 | `thinking: true/false`，其他推理参数映射为布尔开关 | 不支持精确 effort 档位或 token budget；只透传独立思考字段 |

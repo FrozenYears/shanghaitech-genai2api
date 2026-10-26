@@ -89,13 +89,13 @@ flowchart TD
 两类预算独立累计：
 
 - **空完成继续**：工具请求零原始正文、零思考、零调用，且正常 `stop`；默认额外 `E=8`，范围 `0..30`。
-- **工具协议纠错**：生成正常结束，显式工具表示/JSON/Schema/选择/并行约束不合法，且尚未交付正文、思考或工具批次；默认额外`R=3`，范围`0..10`。当前回退到整代暂存之前的状态；模型重新生成，代理不猜参数或修字符串。
+- **工具协议纠错**：正常终态的工具协议/JSON/Schema/选择错误，且工具批次尚未交付时，默认额外`R=3`，范围`0..10`。已显示的正文/思考保留，不阻止对未交付工具的纠错；不撤回、隐藏或程序化重放原进度，也不保证模型不会重复说明。
 
 首次及所有恢复最多 `1+E+R` 次生成，默认 12 次，**不是每一轮都重新获得两类预算**。共用从首次上游生成开始的 **900 秒**窗口，不含附件预处理；ping、心跳、纠错和空继续均不续期。0 只关闭相应恢复类别，不关闭工具请求总时限。无工具请求不启用这些恢复或工具 deadline。
 
 每次恢复使用原问题加真实类别/次数/安全诊断，完整原历史和工具约束不变，不积累空 assistant、旧继续提示或虚构 tool 结果。不把坏批次放行一部分，也不执行或重放客户端操作。JSON 诊断不拼接任意异常文本或模型参数；Schema 反馈只包含约束和声明的缺失字段。上游原生片段错误先记录，在正常终态后统一拒绝；断流和 `length` 不能借此伪装为可恢复的模型错误。
 
-当前回退版本在已交付正文或思考后不再纠错。网络/上游错误、提前EOF、截断、取消、到期不走协议纠错。普通非空计划不按猜测继续。空次数耗尽为`upstream_empty_response`，纠错耗尽保留原错误码并注明耗尽，窗口到期为`upstream_request_timeout`，不交付未校验或迟到工具，不发送成功终态。
+网络/上游错误、提前EOF、截断、取消或到期均不走工具协议纠错，已交付工具绝不重放。正文/思考即时显示，失败尝试的进度也可能可见。`auto`下普通非空计划正常结束；`required/指定工具`未返回调用属于可纠错的选择错误。空耗尽为`upstream_empty_response`，工具耗尽保留原错误码，到期为`upstream_request_timeout`，均不发送成功终态。
 
 ```mermaid
 flowchart TD
@@ -107,7 +107,7 @@ flowchart TD
     E -->|"是"| F["累计空次数；原问题 + 空继续反馈"]
     F --> B
     E -->|"否"| X
-    D -->|"否"| G{"正常结束的坏调用，且未交付内容？"}
+    D -->|"否"| G{"正常结束的坏调用，且工具批次未交付？"}
     G -->|"是"| H{"纠错预算尚余且未到期？"}
     H -->|"是"| I["累计纠错次数；原问题 + 安全校验反馈"]
     I --> B
@@ -182,7 +182,7 @@ pixi run serve --empty-continuations 8 --tool-repair-attempts 3 --tool-request-t
 | 历史关联 | 历史调用转文本时存在丢失调用ID的路径，工具结果虽含ID也不足以完整配对 | 历史assistant调用ID与tool结果ID关联保留，结果明确为已经执行，不按顺序猜归属 |
 | 流式与资源 | 第一跳原本已能流出普通正文/思考；工具也原本需等收全，不应写成“原版完全不流式” | 开始、正文、思考与心跳即时输出；工具批次完整校验后交付，不承诺逐token工具执行 |
 | 网页特性与部署 | 已有图片、文档、搜索、思考开关及Pixi使用方式 | 继续保留；思考仍只是布尔开关、搜索是网页功能、文档仍走网页上传，不把这些列为native重构新增的模型能力 |
-| 生成恢复 | 没有当前统一的空继续/未交付坏调用恢复状态机和累计生成deadline | 严格空完成额外8次、未交付坏调用纠错3次，共享900秒窗口；已交付内容、断流、截断和到期不重放 |
+| 生成恢复 | 没有当前统一的空继续/未交付坏调用恢复状态机和累计生成deadline | 严格空完成额外8次、未交付坏工具批次纠错3次，共享900秒；已显示进度保留，已交付工具及断流/截断/到期不重放 |
 
 源码依据：原版 [`provider/genai.py`](https://github.com/jollyxenon/shanghaitech-genai2api/blob/7e95aab9cb2e76d9f1a7686e4c0ed3dbabf9525e/provider/genai.py)、[`tools/parsing.py`](https://github.com/jollyxenon/shanghaitech-genai2api/blob/7e95aab9cb2e76d9f1a7686e4c0ed3dbabf9525e/tools/parsing.py)、[`provider/features.py`](https://github.com/jollyxenon/shanghaitech-genai2api/blob/7e95aab9cb2e76d9f1a7686e4c0ed3dbabf9525e/provider/features.py)；当前 [`iter_genai_stream` / `_iter_genai_stream`](https://github.com/FrozenYears/shanghaitech-genai2api/blob/bc99766401b70b164ab7176f10763c5214c6fc46/provider/genai.py)、[`validated_events`](https://github.com/FrozenYears/shanghaitech-genai2api/blob/bc99766401b70b164ab7176f10763c5214c6fc46/provider/streaming.py)、[`validate_tool_calls`](https://github.com/FrozenYears/shanghaitech-genai2api/blob/bc99766401b70b164ab7176f10763c5214c6fc46/tools/contracts.py)。
 
@@ -365,4 +365,13 @@ Kimi本轮1825.531秒完成20/20阶段，110次工具、94次客户端模型响�
 ## 14. 整代暂存回退（2026-10-26）
 
 按用户要求，以新提交恢复`99d12cf`之前的功能与测试状态，main不保留整代正文/思考缓冲。第12、13节及对应机器摘要是已回退版本的真实历史，不删除、不改写成当前版本验证。当前交付契约见第4节。
+
+
+## 15. 实时进度与 WebP 多轮兼容
+
+新方案不再用正文/思考的`delivered`状态禁止工具纠错：正文即时流出，只有正常结束且整批校验失败的未交付工具可以在原预算内重生成。失败尝试的进度不撤回；该语义与第12节“隐藏整代失败输出”的方案不同。
+
+上游Kimi对合法WebP的路径存在差异：真实原图作为当前图成功，进入历史后返回“非法的base64图片数据”；同像素PNG两条路径均成功。只转换历史图仍不足以覆盖真实omp“历史图+新WebP”的混合场景，因此在附件边界统一将所有内联静态WebP无损转为PNG，不改轮次、不删图、不引入跨请求缓存。PNG/JPEG与远程URL保持原样，动画WebP明确拒绝而不丢帧。
+
+Pillow仅安装在项目隔离环境，原图和转换后都小于20MiB，并保留像素、透明度、ICC/EXIF；日志只记数量、输入/输出大小和耗时。593项回归与实际HTTP即时输出/工具纠错通过；真实Kimi多图结果见[本轮验收](../validation/streaming-images-2026-10-26.json)，不复用整代暂存版20阶段结果。用户选择只推独立候选分支，main及正式第一跳保持回退版，不启用这些候选功能。
 

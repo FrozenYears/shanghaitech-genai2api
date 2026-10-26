@@ -2,12 +2,14 @@
 import base64
 import binascii
 import logging
+from io import BytesIO
 import mimetypes
 import time
 import uuid
 from urllib.parse import unquote, urljoin, urlparse
 
 import requests
+from PIL import Image, UnidentifiedImageError
 
 from config import build_genai_headers
 from errors import UpstreamError
@@ -158,6 +160,38 @@ def upload_document(file, token, model, group):
     return result, filename
 
 
+class _ImageOutput(BytesIO):
+    def write(self, data):
+        if self.tell() + len(data) >= IMAGE_LIMIT:
+            raise ValueError("图片转为 PNG 后必须小于 20 MiB")
+        return super().write(data)
+
+
+def _compatible_image_url(url):
+    """多图和历史分支不兼容 WebP；统一传 PNG，保留像素、透明度与轮次。"""
+    if url.partition(";")[0].lower() != "data:image/webp":
+        return url
+    raw, _ = decode_file(url, "", IMAGE_LIMIT)
+    started = time.monotonic()
+    try:
+        with Image.open(BytesIO(raw)) as image:
+            if image.format != "WEBP":
+                raise ValueError("WebP 的 MIME 与实际图片格式不一致")
+            if getattr(image, "is_animated", False):
+                raise ValueError("动画 WebP 无法无损转为单张 PNG，请使用静态图片")
+            if image.width * image.height > Image.MAX_IMAGE_PIXELS:
+                raise ValueError("WebP 像素数量超过安全解码上限")
+            with _ImageOutput() as output:
+                metadata = {key: image.info[key] for key in ("icc_profile", "exif") if key in image.info}
+                image.save(output, format="PNG", **metadata)
+                converted = output.getvalue()
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("WebP 图片无法解码，请重新发送有效图片") from exc
+    logger.info("image normalized count=1 bytes_in=%d bytes_out=%d prepare_ms=%.0f",
+                len(raw), len(converted), (time.monotonic() - started) * 1000)
+    return "data:image/png;base64," + base64.b64encode(converted).decode("ascii")
+
+
 def prepare_request(messages, model, config, body, api_format):
     """在开始响应前完成附件处理，保留历史多模态输入并生成当前轮参数。"""
     options = request_options(body, api_format)
@@ -181,7 +215,7 @@ def prepare_request(messages, model, config, body, api_format):
                 elif part["type"] == "image_url":
                     image_count += 1
                     # 平台自己会读取 data URL 或公网 URL，不需要图片服务，也不需要宽高。
-                    url = part["image_url"]["url"]
+                    url = _compatible_image_url(part["image_url"]["url"])
                     if url.startswith("data:") and len(url) > IMAGE_LIMIT * 4 // 3 + 1024:
                         raise ValueError("内联图片必须小于 20 MiB")
                     if index == last_user:

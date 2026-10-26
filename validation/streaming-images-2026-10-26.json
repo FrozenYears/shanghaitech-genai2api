@@ -1,0 +1,73 @@
+{
+  "date": "2026-10-26",
+  "branch": "fix/streaming-repair-image-history",
+  "publication_choice": "User selected independent repair branches; do not merge candidate into main",
+  "main_rollback": {
+    "first_hop": "5864619c13d9f3b8b38436cbe909c15871eb3c40",
+    "relay": "575b8046495815d71f195746ae42675c07068ba1",
+    "restored_functional_baseline": "05a83b7",
+    "history_rewritten": false,
+    "historical_validation_records_deleted": false
+  },
+  "streaming_candidate": {
+    "commit": "6a29101e9ccc51477f515819a3381158160e1b6c",
+    "text_and_reasoning_stream_before_upstream_completion": true,
+    "whole_generation_buffering": false,
+    "tool_repair_requires_normal_terminal_and_undelivered_batch": true,
+    "displayed_progress_is_preserved": true,
+    "failed_attempts_may_be_visible": true,
+    "no_promise_to_deduplicate_model_explanations": true,
+    "already_delivered_tools_replayed": false,
+    "real_http_smoke": {"passed": true, "generations": 2, "validated_tool_calls": 1, "reasoning_and_text_before_done": true},
+    "empty_continuations": 8,
+    "tool_repair_attempts": 3,
+    "shared_deadline_seconds": 900,
+    "never_retries": ["network failures", "premature EOF", "length truncation", "cancellation", "expired deadline"]
+  },
+  "image_diagnosis": {
+    "reported_symptom": "Kimi second image or subsequent tool image read fails with illegal base64 image data; text continuation may fail repeatedly",
+    "confirmed": "A valid WebP from the failing local session succeeded as a current image but failed in history. Equivalent decoded pixels encoded as PNG succeeded in both positions. Real omp still failed with history-only conversion when old images and a new WebP were mixed.",
+    "original_image_bytes": 10918,
+    "equivalent_png_bytes": 121583,
+    "before": [
+      {"encoding": "WebP", "position": "current", "http_status": 200},
+      {"encoding": "WebP", "position": "history_then_text_continue", "http_status": 502, "error": "Upstream error: 非法的base64图片数据"},
+      {"encoding": "PNG", "position": "current", "http_status": 200},
+      {"encoding": "PNG", "position": "history_then_text_continue", "http_status": 200}
+    ],
+    "blob_reference_limit": "blob:sha256 references in persisted sessions are normal local storage references, not proof of invalid outgoing payloads; controlled outgoing requests contained valid complete base64.",
+    "not_changed": ["no history clearing", "no image omission", "no client global configuration edits", "no server reads of client blob references", "no cross-request attachment cache"]
+  },
+  "image_candidate": {
+    "behavior": "Losslessly convert all inline static WebP to PNG at attachment preparation, in current and historical positions; preserve image order, message roles, decoded pixels, alpha and ICC/EXIF",
+    "dependency": {"pillow": ">=13,<14", "tested_version": "13.0.0", "environment": "project-local Pixi only", "lock_targets": ["linux-64", "win-64"], "offline_lock_check": "passed"},
+    "bounds": ["original and converted images strictly below 20 MiB", "bounded PNG writer", "pixel decode safety limit", "animated WebP rejected rather than silently dropping frames"],
+    "unchanged_inputs": ["PNG", "JPEG", "remote image URLs"],
+    "remote_webp_limit": "Remote URLs remain upstream-fetched; not all remote WebP combinations were validated"
+  },
+  "regressions": {"first_hop_passed": 593, "relay_passed": 89, "relay_subtests_passed": 259},
+  "real_omp_webp_task": {
+    "model": {"provider": "GenAI", "id": "Kimi-k3", "api": "openai-completions"},
+    "sessions_persisted": true,
+    "sequence": ["read first WebP: red", "read second WebP: blue", "modify and reread first path: purple", "text-only recall of all three observations"],
+    "completion_statuses": ["completed", "completed", "completed", "completed"],
+    "tool_executions": [1, 1, 1, 0],
+    "http_requests": 7,
+    "invalid_base64_images_at_client_boundary": 0,
+    "local_evidence": ".validation-runtime/streaming-images/omp-20261026-220034"
+  },
+  "same_session_recovery": {
+    "sequence": ["old service reads first WebP", "old service fails with illegal base64 on second prompt", "switch to candidate and continue with text only", "read second WebP", "modify and reread first WebP", "text-only recall"],
+    "completion_statuses": ["completed", "error", "completed", "completed", "completed", "completed"],
+    "same_session_id_throughout": true,
+    "original_image_hash_preserved_in_continuation_request": true,
+    "history_reset": false,
+    "text_continuation_tool_executions": 0,
+    "all_steps_after_switch_succeeded": true,
+    "http_requests": 9,
+    "local_evidence": ".validation-runtime/streaming-images/omp-20261026-220545"
+  },
+  "privacy": "No original user image bytes, image hashes, private project paths, credentials or original user session contents are published in this record",
+  "retention_choice": "Keep summaries, sanitized logs, sessions, test fixtures and associated image blobs; remove temporary scripts, model configuration, caches and temporary HOME",
+  "limits": ["These are targeted real model and regression checks, not another 20-stage endurance run", "The previously published 20-stage result belongs to the reverted generation-buffering version", "The candidate remains separate from main by explicit user choice"]
+}

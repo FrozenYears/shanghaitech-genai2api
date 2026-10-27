@@ -106,6 +106,17 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
                 for event in events:
                     if control.cancelled.is_set():
                         return
+                    # 已进入坏调用纠错的 auto 请求不能用纯正文放弃未交付批次。
+                    if (event["type"] == "done" and event.get("finish_reason") == "stop"
+                            and repair_count and tool_choice in (None, "auto") and not event.get("tool_calls")):
+                        event = {
+                            "type": "error", "code": "tool_repair_incomplete",
+                            "message": "Tool repair ended without a call; the pending batch was not delivered",
+                            "repair_feedback": (
+                                "上一次工具调用尚未交付或执行，纠错后不能只给计划或正文就结束。"
+                                "请按原工具白名单和Schema生成完整合法调用；未知参数不要猜，不要虚构结果。"
+                            ),
+                        }
                     if event["type"] == "delta" and (event.get("content") or event.get("reasoning")):
                         delivered = True
                     if event["type"] != "error":

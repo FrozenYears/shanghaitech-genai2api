@@ -166,6 +166,49 @@ def test_visible_progress_does_not_prevent_undelivered_tool_repair(monkeypatch, 
 
 @pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("failure", ["bad_json", "native_schema"])
+def test_auto_tool_repair_cannot_abandon_the_pending_batch(monkeypatch, protocol, stream, failure):
+    bad = generation(content='@@ACTION@@{"calls":invalid}@@END_ACTION@@')
+    if failure == "native_schema":
+        bad = generation(calls=[native('{"content":"missing path"}')], finish="tool_calls")
+    requests_seen, _ = patch_generations(monkeypatch, [
+        bad, generation(content="I will write the file next."), generation(content=action(PARAMETERS)),
+    ])
+    path, body = request_body(protocol, stream)
+    response = create_app(Config(Token(), 0, None, False)).test_client().post(path, json=body)
+    assert calls_from(response, protocol, stream) == [PARAMETERS]
+    assert len(requests_seen) == 3
+    assert requests_seen[2]["messages"] == requests_seen[0]["messages"]
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("budget", [1, 3])
+def test_unfinished_auto_tool_repair_exhausts_with_error_instead_of_success(monkeypatch, protocol, stream, budget):
+    requests_seen, _ = patch_generations(monkeypatch, [
+        generation(content=action({"content": "missing path"})), generation(content="I will inspect it next."),
+    ])
+    path, body = request_body(protocol, stream)
+    response = create_app(Config(Token(), 0, None, False, tool_repair_attempts=budget)).test_client().post(path, json=body)
+    assert error_from(response, stream)["code"] == "tool_repair_incomplete"
+    assert len(requests_seen) == budget + 1
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_disabled_tools_can_correct_a_bad_call_to_a_plain_answer(monkeypatch, protocol, stream):
+    requests_seen, _ = patch_generations(monkeypatch, [
+        generation(content=action(PARAMETERS)), generation(content="Tools are disabled; no file was changed."),
+    ])
+    path, body = request_body(protocol, stream)
+    body["tool_choice"] = "none" if protocol != "messages" else {"type": "none"}
+    response = create_app(Config(Token(), 0, None, False)).test_client().post(path, json=body)
+    assert calls_from(response, protocol, stream) == []
+    assert len(requests_seen) == 2
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("kind", ["network", "length", "native_length", "upstream_error"])
 def test_unsafe_or_failed_generation_is_not_replayed(monkeypatch, protocol, stream, kind):
     bad = generation(content=action({"content": "hidden"}))

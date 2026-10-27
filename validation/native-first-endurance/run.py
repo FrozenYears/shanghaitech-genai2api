@@ -26,6 +26,38 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def agent_verifier_receipt(result, command, stage):
+    """最后一次要求的验收须成功，且开始于最后一次源码修改完成之后。"""
+    starts = {}
+    last_mutation = last_check_start = -1
+    last_check_passed, successes = False, 0
+    for index, event in enumerate((result or {}).get('events', [])):
+        kind = event.get('type')
+        if kind == 'tool_execution_start':
+            starts[event.get('toolCallId')] = (index, event.get('args') or {})
+        elif kind == 'tool_execution_end':
+            start, arguments = starts.get(event.get('toolCallId'), (-1, {}))
+            name = event.get('toolName')
+            path = arguments.get('path')
+            if (name in ('write', 'edit') and not event.get('isError')
+                    and isinstance(path, str) and path.lower().endswith('.py')):
+                last_mutation = index
+            if name != 'bash' or (arguments.get('command') or '').strip() != command.strip():
+                continue
+            last_check_start, last_check_passed = start, False
+            output = event.get('result')
+            if event.get('isError') or not isinstance(output, dict):
+                continue
+            text = '\n'.join(part.get('text', '') for part in output.get('content', []) if part.get('type') == 'text')
+            try:
+                receipt, _ = json.JSONDecoder().raw_decode(text.lstrip())
+            except ValueError:
+                continue
+            last_check_passed = isinstance(receipt, dict) and receipt.get('stage') == stage and receipt.get('passed') is True
+            successes += int(last_check_passed)
+    return {'passed': last_check_passed and last_check_start > last_mutation, 'successful_receipts': successes}
+
+
 def verify(workspace, stage, output=None, deadline=None):
     """逐请求运行实际业务代码；期望只由验收进程持有。"""
     failures = []
@@ -155,8 +187,20 @@ def run(args):
                           'model_requests': response['model_requests'], 'elapsed_s': response.get('elapsed_s'),
                           'automatic_feedback_count': state['automatic_feedback_count'],
                           'stagnation_count': state['stagnation_count'], 'stop_reason': state['stop_reason']})
+            def check_stage(seconds):
+                check = verify(workspace, index, deadline=time.monotonic() + seconds)
+                receipt = agent_verifier_receipt(client.last_result, command, index)
+                check.update(business_passed=check['passed'], business_assertions=check['assertions'],
+                             agent_verifier=receipt, assertions=check['assertions'] + 1)
+                if not receipt['passed']:
+                    check['passed'] = False
+                    check['failure_count'] += 1
+                    check['failures'].append({'case': 'required_agent_verifier_not_executed',
+                                              'error': 'No successful tool receipt for the required verifier after the final source edit',
+                                              'command': command})
+                return check
             state = supervise(client, prompt,
-                              lambda seconds: verify(workspace, index, deadline=time.monotonic() + seconds),
+                              check_stage,
                               artifact_dir=stage_dir, max_feedback=args.max_feedback,
                               deadline=started + args.max_minutes * 60, turn_timeout=args.stage_timeout,
                               on_progress=progress)

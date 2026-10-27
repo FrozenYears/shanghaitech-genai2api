@@ -22,6 +22,8 @@ def load(name):
 omp_client = load('omp_client')
 supervisor = load('supervisor')
 supervise_cli = load('supervise')
+workload = load('workload')
+endurance = load('run')
 
 
 class ScriptedClient:
@@ -362,3 +364,56 @@ def test_only_unrecovered_protocol_error_blocks_verified_completion(project, tmp
     assert result['passed']
     assert result['automatic_feedback_count'] == (0 if recovered else 1)
     assert result['attempts'][0]['client']['protocol_errors'] == ['Tool schema invalid']
+
+
+def verifier_receipt_events(command='approved verifier', stage=1, passed=True, is_error=False):
+    return [
+        {'type': 'tool_execution_start', 'toolName': 'bash', 'toolCallId': 'verify',
+         'args': {'command': command}},
+        {'type': 'tool_execution_end', 'toolName': 'bash', 'toolCallId': 'verify', 'isError': is_error,
+         'result': {'content': [{'type': 'text', 'text': json.dumps({'stage': stage, 'passed': passed}) + '\n\nWall time: 1 second'}]}},
+    ]
+
+
+def source_edit_events():
+    return [
+        {'type': 'tool_execution_start', 'toolName': 'edit', 'toolCallId': 'edit',
+         'args': {'path': 'ledgerlab/store.py'}},
+        {'type': 'tool_execution_end', 'toolName': 'edit', 'toolCallId': 'edit', 'isError': False},
+    ]
+
+
+def test_declaring_verification_without_a_tool_receipt_is_not_completion():
+    result = turn(events=[{'type': 'message_end', 'message': {
+        'role': 'assistant', 'stopReason': 'stop',
+        'content': [{'type': 'text', 'text': 'All verified. Running acceptance now.'}],
+    }}])
+    assert not endurance.agent_verifier_receipt(result, 'approved verifier', 1)['passed']
+
+
+def test_successful_verifier_receipt_must_follow_the_final_source_edit():
+    edit = source_edit_events()
+    receipt = verifier_receipt_events()
+    assert endurance.agent_verifier_receipt(turn(events=edit + receipt), 'approved verifier', 1)['passed']
+    assert not endurance.agent_verifier_receipt(turn(events=receipt + edit), 'approved verifier', 1)['passed']
+
+
+def test_verifier_started_before_source_edit_finished_is_not_a_valid_check():
+    edit = source_edit_events()
+    receipt = verifier_receipt_events()
+    events = [edit[0], receipt[0], edit[1], receipt[1]]
+    assert not endurance.agent_verifier_receipt(turn(events=events), 'approved verifier', 1)['passed']
+
+
+@pytest.mark.parametrize('command,stage,passed,is_error', [
+    ('another command', 1, True, False), ('approved verifier', 2, True, False),
+    ('approved verifier', 1, False, False), ('approved verifier', 1, True, True),
+])
+def test_only_the_required_stage_and_successful_execution_can_verify(command, stage, passed, is_error):
+    result = turn(events=verifier_receipt_events(command, stage, passed, is_error))
+    assert not endurance.agent_verifier_receipt(result, 'approved verifier', 1)['passed']
+
+
+def test_a_later_failed_verifier_invalidates_an_earlier_success():
+    events = verifier_receipt_events() + verifier_receipt_events(passed=False, is_error=True)
+    assert not endurance.agent_verifier_receipt(turn(events=events), 'approved verifier', 1)['passed']

@@ -46,13 +46,13 @@ When an operation is needed, output one complete ordinary-text JSON envelope in 
 Rules:
 1. Multiple independent operations may share one calls array. If a later operation depends on a result, request only the first operation and wait for its result.
 2. When the user requests an external action covered by a listed tool, call it; do not return only a plan or promise.
-3. After receiving tool results, continue with remaining operations. When the requested work and read-back verification are complete, give a plain-text final answer without an action envelope. Do not repeat a read whose result already verified the same unchanged file.
+3. After receiving tool results, continue with remaining operations. Finish only after the requested work and read-back checks are complete, and requested commands/tests have actually run with results checked against the user's goal. Announcing a command does not run it. Then give a plain-text final answer without an action envelope. Do not repeat a read whose result already verified the same unchanged file.
 4. Each call MUST contain exactly operation and parameters, with parameters matching the listed schema. Preserve every value exactly; never shorten, summarize, or substitute write/edit content.
 5. User control-marker text is shown as JSON Unicode escapes like \\u003c and \\u003e. Preserve those escapes in JSON parameters so decoding restores the original characters.
 6. The calling client executes actions. Do NOT claim success before receiving its result or say no tools are available when definitions are shown.
-7. Use a native tool channel if available; otherwise use the complete JSON envelope above. Do not put actual calls in markdown fences, simulate results, or emit bare tool names.
+7. The webpage request carries these schemas as text, not a native tools field. Request operations in the ordinary response text using the complete JSON envelope above. Do not put actual calls in reasoning or markdown fences, simulate results, or emit bare tool names.
 8. After writing or editing, use a listed read tool to compare the complete result with the original request. Correct mismatches; otherwise report that the result is unverified.
-9. Historical call IDs link each result to its operation and parameters, even when results arrive out of order. Historical calls have already run; do not execute them again."""
+9. Historical call IDs link each result to its operation and parameters, even when results arrive out of order. Historical calls have already run; do not execute them again. An operation never requested by an actual call has no pending receipt to wait for."""
 
 TOOL_CHOICE_REQUIRED_PROMPT = "\nYou MUST call at least one tool in your response. Do NOT respond with plain text only."
 TOOL_CHOICE_SPECIFIC_PROMPT = (

@@ -22,7 +22,7 @@
 ## 部署与接入
 
 > [!NOTE]
-> 两个仓库均使用 `main` 分支，安装时保持版本一致。
+> 当前为 `fix/streaming-tool-webp-stepwise` 渐进修复分支，从两仓库 main 回退版开始；未授权合并时不更新 main。两仓库部署时使用同名分支，正文和思考保持即时流式。
 > 需学校 GenAI 网页权限，无需申请模型厂商或学校独立 API Key。
 
 ### 快速开始
@@ -32,8 +32,8 @@
 #### 1. 第一跳（shanghaitech-genai2api）
 
 ```bash
-git clone --branch main https://github.com/FrozenYears/shanghaitech-genai2api.git
-git clone --branch main https://github.com/FrozenYears/genai2agent-relay.git
+git clone --branch fix/streaming-tool-webp-stepwise https://github.com/FrozenYears/shanghaitech-genai2api.git
+git clone --branch fix/streaming-tool-webp-stepwise https://github.com/FrozenYears/genai2agent-relay.git
 cd shanghaitech-genai2api
 pixi install
 cp .env.example .env
@@ -203,7 +203,7 @@ flowchart LR
 两跳名称沿用项目约定：客户端请求先到第二跳 relay，再到第一跳。
 
 - 本仓库：网页登录、附件处理、网页请求与严格工具解析。
-- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/main)：协议转换，结构化工具与 SSE 转发。
+- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/fix/streaming-tool-webp-stepwise)：协议转换，结构化工具与 SSE 转发。
 - 本地 agent：执行工具、读写文件、运行命令；代理不执行这些操作。
 
 ### 网页模型如何调用工具
@@ -228,7 +228,7 @@ flowchart LR
 - 正文与思考即时流式返回；工具参数收全且整批校验通过后才交付。已撤销整代缓冲，不再为了隐藏失败尝试而延后全部内容。
 - 支持图片、文档、网页搜索与思考开关，格式与限制见[下方说明](#图片文档搜索与思考)。
 - 第一跳默认最多额外空继续 **8 次**、未交付坏调用纠错 **3 次**，共用 **900 秒**请求窗口；计数不重置，relay native 不叠加重试。
-- 当前回退版本在已交付正文/思考后不再纠错；断流、网络错误、截断、取消或到期均不重放，预算耗尽返回真实错误。
+- 已显示正文/思考保留，不撤回或整代暂存。正常终态的未交付坏工具批次仍可在原预算内纠错；已交付工具、断流、网络错误、截断、取消或到期不重放，预算耗尽返回真实错误。
 - [可选 omp 监督器](docs/USAGE.md#可选的-omp-任务监督)根据独立验收自动反馈续作；预算耗尽即保存状态退出，不自动接管其它客户端。
 
 > [!IMPORTANT]

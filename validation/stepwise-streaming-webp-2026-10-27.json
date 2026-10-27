@@ -1,7 +1,7 @@
 {
   "date": "2026-10-27",
   "branch": "fix/streaming-tool-webp-stepwise",
-  "status": "Incremental evidence; final strict natural task acceptance is not established yet",
+  "status": "Targeted fixes and final strict 20-stage natural acceptance passed; not a universal guarantee against future initial-auto semantic stops",
   "main_policy": {
     "explicit_user_merge_required": true,
     "root_frozen": "5864619c13d9f3b8b38436cbe909c15871eb3c40",
@@ -29,11 +29,12 @@
   "implementation": {
     "live_repair_commit": "1249a6eefa947c29a887e572f4d2c698924ca465",
     "pending_repair_and_verifier_commit": "2a91593df7a77a84f7dd1fb9ae041429a178252c",
-    "relay_docs_commit": "dd477d29f390caf8b931b49911e6fa0fc68d0eba",
+    "relay_docs_commit": "cb86e44d1a0e35f78b996cc64baf9336d8597033",
     "system_prompt_delta": "Only three existing rules clarified: text transport, actual requested command results, no receipt for an unsent operation; not the former long prompt trial",
     "pending_auto_repair_cannot_succeed_without_tool": true,
     "initial_auto_plain_text_still_legal": true,
-    "new_failure_code": "tool_repair_incomplete"
+    "new_failure_code": "tool_repair_incomplete",
+    "image_and_current_context_commit": "23600897a40a1f93c85d18b544451bbca8ae37be"
   },
   "regression": {
     "root_passed": 665,
@@ -1076,6 +1077,586 @@
         "receipt_criterion": "Successful allowed command returns trusted verifier JSON for this stage after the last Python source edit; no reliance on optional exitCode metadata"
       },
       "local_evidence": ".validation-runtime/stepwise/live-repair-20261027-152151"
+    },
+    "final_strict": {
+      "model": "Kimi-k3",
+      "started_at": "2026-10-27T19:06:08+0800",
+      "completed": true,
+      "elapsed_s": 2060.25,
+      "stages_passed": 20,
+      "tool_calls": 95,
+      "tool_errors": 2,
+      "model_requests": 75,
+      "repeated_tool_inputs": 2,
+      "automatic_feedback_count": 0,
+      "human_interventions": 0,
+      "stop_reason": "all_planned_stages_completed",
+      "budget": {
+        "max_feedback_per_stage": 0,
+        "max_minutes": 45.0,
+        "turn_timeout_s": 1200
+      },
+      "stages": [
+        {
+          "stage": 1,
+          "name": "decimal_money",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 8,
+                "model_requests": 5,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 12,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 2,
+          "name": "group_summary",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 5,
+                "model_requests": 4,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 14,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 3,
+          "name": "csv_ingestion",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 3,
+                "model_requests": 3,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 16,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 4,
+          "name": "sqlite_persistence",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 3,
+                "model_requests": 3,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 21,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 5,
+          "name": "atomic_import",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 5,
+                "model_requests": 5,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 29,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 6,
+          "name": "query_filters",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 6,
+                "model_requests": 4,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 32,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 7,
+          "name": "atomic_transfer",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 5,
+                "model_requests": 3,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 39,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 8,
+          "name": "reversal",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 7,
+                "model_requests": 3,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 44,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 9,
+          "name": "running_balances",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 6,
+                "model_requests": 4,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 46,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 10,
+          "name": "budget_report",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 4,
+                "model_requests": 3,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 47,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 11,
+          "name": "merge_batches",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 4,
+                "model_requests": 3,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 49,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 12,
+          "name": "csv_export",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 4,
+                "model_requests": 3,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 51,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 13,
+          "name": "reconciliation",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 4,
+                "model_requests": 3,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 53,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 14,
+          "name": "stable_pagination",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 4,
+                "model_requests": 3,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 59,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 15,
+          "name": "storage_migration",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 4,
+                "model_requests": 4,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 62,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 16,
+          "name": "module_refactor",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 3,
+                "model_requests": 3,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 63,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 17,
+          "name": "monthly_report",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 4,
+                "model_requests": 3,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 64,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 18,
+          "name": "category_relabel",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 4,
+                "model_requests": 4,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 69,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 19,
+          "name": "account_statement",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 4,
+                "model_requests": 4,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 71,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        },
+        {
+          "stage": 20,
+          "name": "daily_cashflow",
+          "passed": true,
+          "stop_reason": "verified_completed",
+          "attempts": [
+            {
+              "client": {
+                "completion_status": "completed",
+                "tool_count": 8,
+                "model_requests": 8,
+                "protocol_errors": []
+              },
+              "verification": {
+                "passed": true,
+                "assertions": 72,
+                "failure_count": 0,
+                "failed_cases": []
+              }
+            }
+          ]
+        }
+      ],
+      "capture": {
+        "requests": 75,
+        "school_http_attempts": 76,
+        "all_hop_calls_preserved": true,
+        "requests_with_validation_errors": [
+          {
+            "id": "request-0060",
+            "errors": [
+              "tool_call_parse_error"
+            ],
+            "school_attempts": 2
+          }
+        ],
+        "normal_text_terminals": [
+          "request-0005",
+          "request-0009",
+          "request-0012",
+          "request-0015",
+          "request-0020",
+          "request-0024",
+          "request-0027",
+          "request-0030",
+          "request-0034",
+          "request-0037",
+          "request-0040",
+          "request-0043",
+          "request-0046",
+          "request-0049",
+          "request-0053",
+          "request-0056",
+          "request-0059",
+          "request-0063",
+          "request-0067",
+          "request-0075"
+        ]
+      },
+      "verification": {
+        "final_check": {
+          "stage": 20,
+          "passed": true,
+          "assertions": 72,
+          "failures": [],
+          "failure_count": 0,
+          "business_passed": true,
+          "business_assertions": 71,
+          "agent_verifier": {
+            "passed": true,
+            "successful_receipts": 1
+          }
+        },
+        "all_workflow_receipts": true,
+        "all_business_passed": true,
+        "max_context_tokens": 72563,
+        "model": {
+          "provider": "GenAI",
+          "id": "Kimi-k3",
+          "api": "openai-completions",
+          "baseUrl": "http://127.0.0.1:54809/v1",
+          "contextWindow": 1000000,
+          "maxTokens": 163840
+        }
+      },
+      "environment": {
+        "phase": "final-strict",
+        "mode": "endurance",
+        "source": "D:\\shanghaitech-genai2api-stepwise",
+        "profile_thinking": "low maps boolean true",
+        "profile_max_tokens": 163840,
+        "client_auto_retry": false,
+        "supervisor_feedback": 0,
+        "ports": [
+          54808,
+          54809
+        ],
+        "production_changed": false,
+        "tested_commits": {
+          "root": "23600897a40a1f93c85d18b544451bbca8ae37be",
+          "relay": "cb86e44d1a0e35f78b996cc64baf9336d8597033"
+        },
+        "runtime_source_sha256": {
+          "provider/genai.py": "425589523e1f24114da3162b819e359398c2d43f2981add1f23ea6430b11c45c",
+          "provider/features.py": "97c04d4b6947fa7f817d4cc8bddd8cb68dedfab826a37f7c1b47668a8e9b1375",
+          "provider/streaming.py": "cb530d708322f6c2b3d4245335cbbb9c1dd0f9c8e5a1e51929dd215f43a02470",
+          "tools/prompts.py": "48ad274601c1afeaae6a704d133ff0fae7daafce83dbe5425a8644adc69c08eb",
+          "tools/parsing.py": "396f3365387375673068dc723f91099de9fbd965e63507174c1a3f885263f472",
+          "validation/native-first-endurance/run.py": "02afff3c4106ce363c42588aeb87a0ef7344249208d5ff7a97613c89852786ef",
+          "validation/native-first-endurance/omp_client.py": "9e5906e895d2d6d2e8de57684f8b1ed7811cccdd7e595dbab728dc2803ff6992",
+          "validation/native-first-endurance/workload.py": "6193cdf034d9a12091ba1b14828fce96433025f8ac60a2245e30f626d7262db3",
+          "validation/native-first-endurance/supervisor.py": "2443d6788808de344d4f3fc1683c9bf5a92004be4ee6d7884fbcfab5585bf52a"
+        },
+        "main_base": {
+          "root": "5864619c13d9f3b8b38436cbe909c15871eb3c40",
+          "relay": "575b8046495815d71f195746ae42675c07068ba1"
+        }
+      },
+      "local_evidence": ".validation-runtime/stepwise/final-strict-20261027-190608",
+      "unfinished_work_with_zero_calls_normal_stop_observed": false,
+      "tool_errors_explanation": [
+        {
+          "stage": 20,
+          "cause": "Entry point exceeded the existing 160-line requirement",
+          "repaired_within_same_prompt": true
+        },
+        {
+          "stage": 20,
+          "cause": "CSV error handling regressed during entrypoint refactor",
+          "repaired_within_same_prompt": true
+        }
+      ],
+      "normal_text_terminals_explanation": "20 legal final answers after verified work, one per completed stage; these are not incomplete plan stops.",
+      "streaming_natural_recovery": {
+        "request": "request-0060",
+        "school_first_progress_at_s": 1654.656,
+        "client_first_progress_at_s": 1654.656,
+        "first_generation_stop_at_s": 1683.953,
+        "progress_before_first_generation_stop": true,
+        "legal_calls_delivered": 1,
+        "same_argument_signature_all_hops": true
+      }
     }
   },
   "controlled_recovery": {
@@ -1512,7 +2093,48 @@
     "The seven multi-image visual cases passed content/order inspection, but the strict matrix command exited 1 because one correct label pair used bold Markdown; its original failure is retained.",
     "Local raw SSE is only what was consumed up to the first recognized terminal; no post-terminal drain or reconstruction of private historical failure.",
     "Local controlled data only, not the private 440k-token project conversation.",
-    "Windows runtime exercised; Linux lock checked, no Linux runtime claim."
+    "Windows runtime exercised; Linux lock checked, no Linux runtime claim.",
+    "The final single natural run passed all requested stage actions and verifications; a finite sample does not prove initial auto plan stops impossible or isolate causality between three prompt-rule clarifications."
   ],
-  "privacy": "Only controlled fixture counts, safe call shapes, code metadata and verdicts are public. No login credentials, API keys, private user projects, raw tool parameters, raw model reasoning or original user images."
+  "privacy": "Only controlled fixture counts, safe call shapes, code metadata and verdicts are public. No login credentials, API keys, private user projects, raw tool parameters, raw model reasoning or original user images.",
+  "documentation_check": {
+    "documents": 18,
+    "local_or_cross_repo_links": 155,
+    "heading_anchors": 39,
+    "errors": 0,
+    "historical_model_tables_preserved": true
+  },
+  "verification_environment": {
+    "python": "3.11.16",
+    "pillow": "13.0.0",
+    "flask": "3.1.3",
+    "requests": "2.34.2",
+    "pytest": "9.1.1"
+  },
+  "publication_notes": {
+    "initial_push_tls_errors": "Both origins had one transient schannel handshake failure; ordinary non-force retries succeeded without changing TLS verification or persistent Git configuration",
+    "main_pushes": 0
+  },
+  "retention": {
+    "user_choice": "Keep evidence, remove temporary environments",
+    "runs_cleaned": 9,
+    "isolated_environment_directories_removed": 45,
+    "temporary_scripts_removed": 7,
+    "preserved": [
+      "All controlled raw request/SSE traces and capture summaries",
+      "All stage business and workflow checks, failure records and environment snapshots",
+      "omp JSONL sessions/events, custom-session-files, generated projects and tool policies",
+      "Image blobs moved from agent/blobs to the same run image-blobs before agent configuration removal",
+      "Dedicated worktrees and project-local .pixi environment link"
+    ],
+    "removed": [
+      "Temporary launch/probe scripts",
+      "Per-run model configuration/databases, HOME, TEMP, APPDATA and LOCALAPPDATA",
+      "Temporary db-* SQLite verifier sandboxes"
+    ],
+    "cleanup_complete": true,
+    "ready_to_rerun_entry_retained": false,
+    "sqlite_snapshots_retained": false,
+    "formal_services_stopped": false
+  }
 }

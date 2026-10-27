@@ -1,0 +1,514 @@
+{
+  "date": "2026-10-27",
+  "scope": "Real installed omp, same session, formal two-hop services, school webpage Kimi-k3; no official API, Goal continuation, supervisor feedback or client auto retry",
+  "tested_branch": "fix/kimi-action-prompt",
+  "tested_commits": {
+    "first_hop": "1a40d4773d574ffb4b1bb9ca6b49e5cc20abc542",
+    "relay": "e56f4cc3b500b5b496b6304345119620a681e4dc"
+  },
+  "deployment": {
+    "branch": "fix/kimi-action-prompt",
+    "first_hop_commit": "1a40d4773d574ffb4b1bb9ca6b49e5cc20abc542",
+    "relay_commit": "e56f4cc3b500b5b496b6304345119620a681e4dc",
+    "listeners": [
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 31110,
+        "OwningProcess": 149752
+      },
+      {
+        "LocalAddress": "0.0.0.0",
+        "LocalPort": 31100,
+        "OwningProcess": 145424
+      }
+    ],
+    "other_listener_pairs_before": 97,
+    "other_listener_pairs_preserved": 97,
+    "other_listener_pairs_no_longer_present": 0,
+    "unrelated_service_stop_commands": 0,
+    "main_changed": false,
+    "first_hop_service": "GenaiFirstHopActionPrompt20261027",
+    "relay_service": "GenaiRelayActionPromptFormal20261027",
+    "startup_note": "Relay explicitly loads its own .env; an initial wrong-port launch was stopped before testing."
+  },
+  "configuration": {
+    "thinking": "low maps to platform boolean true; no precise effort guarantee",
+    "client_max_tokens": 16384,
+    "configured_context_window": 1000000,
+    "compaction": false,
+    "client_auto_retry": false,
+    "supervisor_feedback_budget": 0,
+    "production_first_hop_policy": {
+      "empty_continuations": 8,
+      "tool_repairs": 3,
+      "shared_deadline_seconds": 900
+    },
+    "global_client_config_changed": false,
+    "formal_services_left_running": true
+  },
+  "planned_stages": 20,
+  "not_attempted_stages": [
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20
+  ],
+  "observed": {
+    "model": "Kimi-k3",
+    "started_at": "2026-10-27T13:29:57+0800",
+    "completed": false,
+    "elapsed_s": 1125.75,
+    "stages_passed": 8,
+    "tool_calls": 45,
+    "tool_errors": 1,
+    "model_requests": 40,
+    "repeated_tool_inputs": 1,
+    "automatic_feedback_count": 0,
+    "human_interventions": 0,
+    "passed_without_feedback": false,
+    "stop_reason": "feedback_budget_exhausted",
+    "budget": {
+      "max_feedback_per_stage": 0,
+      "max_minutes": 45,
+      "turn_timeout_s": 1200
+    },
+    "identity": {
+      "model": {
+        "provider": "GenAI",
+        "id": "Kimi-k3",
+        "api": "openai-completions",
+        "baseUrl": "http://127.0.0.1:31110/v1",
+        "contextWindow": 1000000,
+        "maxTokens": 16384
+      },
+      "tools": [
+        "read",
+        "write",
+        "edit",
+        "glob",
+        "grep",
+        "bash"
+      ]
+    },
+    "stages": [
+      {
+        "stage": 1,
+        "name": "decimal_money",
+        "passed": true,
+        "stop_reason": "verified_completed",
+        "automatic_feedback_count": 0,
+        "attempts": [
+          {
+            "verification": {
+              "passed": true,
+              "assertions": 11,
+              "failure_count": 0
+            },
+            "client": {
+              "elapsed_s": 66.594,
+              "first_model_event_s": 3.344,
+              "first_text_s": 31.797,
+              "model_requests": 6,
+              "protocol_errors": [],
+              "unrecovered_protocol_error": false,
+              "tool_count": 8,
+              "tool_error_count": 0,
+              "completion_status": "completed",
+              "session_settled": true,
+              "context_before": {
+                "tokens": 3642,
+                "contextWindow": 1000000,
+                "percent": 0.36419999999999997
+              },
+              "context_after": {
+                "tokens": 8309,
+                "contextWindow": 1000000,
+                "percent": 0.8309000000000001
+              }
+            }
+          }
+        ]
+      },
+      {
+        "stage": 2,
+        "name": "group_summary",
+        "passed": true,
+        "stop_reason": "verified_completed",
+        "automatic_feedback_count": 0,
+        "attempts": [
+          {
+            "verification": {
+              "passed": true,
+              "assertions": 13,
+              "failure_count": 0
+            },
+            "client": {
+              "elapsed_s": 47.078,
+              "first_model_event_s": 2.328,
+              "first_text_s": 37.562,
+              "model_requests": 5,
+              "protocol_errors": [],
+              "unrecovered_protocol_error": false,
+              "tool_count": 6,
+              "tool_error_count": 0,
+              "completion_status": "completed",
+              "session_settled": true,
+              "context_before": {
+                "tokens": 8309,
+                "contextWindow": 1000000,
+                "percent": 0.8309000000000001
+              },
+              "context_after": {
+                "tokens": 11137,
+                "contextWindow": 1000000,
+                "percent": 1.1137
+              }
+            }
+          }
+        ]
+      },
+      {
+        "stage": 3,
+        "name": "csv_ingestion",
+        "passed": true,
+        "stop_reason": "verified_completed",
+        "automatic_feedback_count": 0,
+        "attempts": [
+          {
+            "verification": {
+              "passed": true,
+              "assertions": 15,
+              "failure_count": 0
+            },
+            "client": {
+              "elapsed_s": 138.344,
+              "first_model_event_s": 5.0,
+              "first_text_s": 38.985,
+              "model_requests": 5,
+              "protocol_errors": [],
+              "unrecovered_protocol_error": false,
+              "tool_count": 5,
+              "tool_error_count": 0,
+              "completion_status": "completed",
+              "session_settled": true,
+              "context_before": {
+                "tokens": 11137,
+                "contextWindow": 1000000,
+                "percent": 1.1137
+              },
+              "context_after": {
+                "tokens": 12944,
+                "contextWindow": 1000000,
+                "percent": 1.2944
+              }
+            }
+          }
+        ]
+      },
+      {
+        "stage": 4,
+        "name": "sqlite_persistence",
+        "passed": true,
+        "stop_reason": "verified_completed",
+        "automatic_feedback_count": 0,
+        "attempts": [
+          {
+            "verification": {
+              "passed": true,
+              "assertions": 20,
+              "failure_count": 0
+            },
+            "client": {
+              "elapsed_s": 160.016,
+              "first_model_event_s": 2.531,
+              "first_text_s": 18.172,
+              "model_requests": 5,
+              "protocol_errors": [],
+              "unrecovered_protocol_error": false,
+              "tool_count": 5,
+              "tool_error_count": 0,
+              "completion_status": "completed",
+              "session_settled": true,
+              "context_before": {
+                "tokens": 12944,
+                "contextWindow": 1000000,
+                "percent": 1.2944
+              },
+              "context_after": {
+                "tokens": 16037,
+                "contextWindow": 1000000,
+                "percent": 1.6037
+              }
+            }
+          }
+        ]
+      },
+      {
+        "stage": 5,
+        "name": "atomic_import",
+        "passed": true,
+        "stop_reason": "verified_completed",
+        "automatic_feedback_count": 0,
+        "attempts": [
+          {
+            "verification": {
+              "passed": true,
+              "assertions": 28,
+              "failure_count": 0
+            },
+            "client": {
+              "elapsed_s": 109.547,
+              "first_model_event_s": 7.953,
+              "first_text_s": 68.313,
+              "model_requests": 3,
+              "protocol_errors": [],
+              "unrecovered_protocol_error": false,
+              "tool_count": 2,
+              "tool_error_count": 0,
+              "completion_status": "completed",
+              "session_settled": true,
+              "context_before": {
+                "tokens": 16037,
+                "contextWindow": 1000000,
+                "percent": 1.6037
+              },
+              "context_after": {
+                "tokens": 17603,
+                "contextWindow": 1000000,
+                "percent": 1.7603
+              }
+            }
+          }
+        ]
+      },
+      {
+        "stage": 6,
+        "name": "query_filters",
+        "passed": true,
+        "stop_reason": "verified_completed",
+        "automatic_feedback_count": 0,
+        "attempts": [
+          {
+            "verification": {
+              "passed": true,
+              "assertions": 31,
+              "failure_count": 0
+            },
+            "client": {
+              "elapsed_s": 101.719,
+              "first_model_event_s": 2.594,
+              "first_text_s": 28.907,
+              "model_requests": 4,
+              "protocol_errors": [],
+              "unrecovered_protocol_error": false,
+              "tool_count": 4,
+              "tool_error_count": 0,
+              "completion_status": "completed",
+              "session_settled": true,
+              "context_before": {
+                "tokens": 17603,
+                "contextWindow": 1000000,
+                "percent": 1.7603
+              },
+              "context_after": {
+                "tokens": 19988,
+                "contextWindow": 1000000,
+                "percent": 1.9988
+              }
+            }
+          }
+        ]
+      },
+      {
+        "stage": 7,
+        "name": "atomic_transfer",
+        "passed": true,
+        "stop_reason": "verified_completed",
+        "automatic_feedback_count": 0,
+        "attempts": [
+          {
+            "verification": {
+              "passed": true,
+              "assertions": 38,
+              "failure_count": 0
+            },
+            "client": {
+              "elapsed_s": 271.25,
+              "first_model_event_s": 2.766,
+              "first_text_s": 72.484,
+              "model_requests": 7,
+              "protocol_errors": [],
+              "unrecovered_protocol_error": false,
+              "tool_count": 9,
+              "tool_error_count": 1,
+              "completion_status": "completed",
+              "session_settled": true,
+              "context_before": {
+                "tokens": 19988,
+                "contextWindow": 1000000,
+                "percent": 1.9988
+              },
+              "context_after": {
+                "tokens": 24266,
+                "contextWindow": 1000000,
+                "percent": 2.4266
+              }
+            }
+          }
+        ]
+      },
+      {
+        "stage": 8,
+        "name": "reversal",
+        "passed": true,
+        "stop_reason": "verified_completed",
+        "automatic_feedback_count": 0,
+        "attempts": [
+          {
+            "verification": {
+              "passed": true,
+              "assertions": 43,
+              "failure_count": 0
+            },
+            "client": {
+              "elapsed_s": 136.484,
+              "first_model_event_s": 3.062,
+              "first_text_s": 30.39,
+              "model_requests": 4,
+              "protocol_errors": [],
+              "unrecovered_protocol_error": false,
+              "tool_count": 6,
+              "tool_error_count": 0,
+              "completion_status": "completed",
+              "session_settled": true,
+              "context_before": {
+                "tokens": 24266,
+                "contextWindow": 1000000,
+                "percent": 2.4266
+              },
+              "context_after": {
+                "tokens": 27246,
+                "contextWindow": 1000000,
+                "percent": 2.7246
+              }
+            }
+          }
+        ]
+      },
+      {
+        "stage": 9,
+        "name": "running_balances",
+        "passed": false,
+        "stop_reason": "feedback_budget_exhausted",
+        "automatic_feedback_count": 0,
+        "attempts": [
+          {
+            "verification": {
+              "passed": false,
+              "assertions": 45,
+              "failure_count": 1
+            },
+            "client": {
+              "elapsed_s": 40.328,
+              "first_model_event_s": 3.218,
+              "first_text_s": 36.812,
+              "model_requests": 1,
+              "protocol_errors": [],
+              "unrecovered_protocol_error": false,
+              "tool_count": 0,
+              "tool_error_count": 0,
+              "completion_status": "completed",
+              "session_settled": true,
+              "context_before": {
+                "tokens": 27246,
+                "contextWindow": 1000000,
+                "percent": 2.7246
+              },
+              "context_after": {
+                "tokens": 27882,
+                "contextWindow": 1000000,
+                "percent": 2.7882000000000002
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "failure": {
+    "stage": 9,
+    "name": "running_balances",
+    "last_response_type": "plan-only normal final answer",
+    "assistant_stop_reason": "stop",
+    "prompt_status": "completed",
+    "session_settled": true,
+    "tools": 0,
+    "protocol_errors": 0,
+    "thinking_chars": 3731,
+    "text_chars": 372,
+    "text_excerpt": "Stage 9: add `balances`. Approach: refactor range validation into `_validate_range` shared by `list_rows` and new `balances()`",
+    "reported_input_tokens_before": 27246,
+    "reported_input_tokens_after": 27882,
+    "reported_output_tokens": 899,
+    "business_check": {
+      "assertions": 45,
+      "failures": 1,
+      "case": "opening_balance",
+      "operation": "balances",
+      "actual": {
+        "ok": false,
+        "error": "unknown_operation"
+      }
+    },
+    "controller_stop_reason": "feedback_budget_exhausted",
+    "controller_reason_explanation": "Feedback budget was zero: after settled generation failed the independent business check, stop rather than send another user continuation. Not a network, token limit or shared-deadline stop."
+  },
+  "streaming_observation": {
+    "clock": "omp RPC seconds from client start",
+    "last_prompt_ack_at_s": 1074.125,
+    "first_thinking_delta_at_s": 1077.343,
+    "next_thinking_delta_at_s": 1077.453,
+    "first_text_delta_at_s": 1110.937,
+    "assistant_message_end_at_s": 1114.437,
+    "reasoning_and_text_arrived_before_message_end": true,
+    "client_prompt_elapsed_s": 40.328,
+    "whole_generation_buffering_added": false
+  },
+  "tool_error": {
+    "stage": 7,
+    "tool": "bash",
+    "cause": "Independent checker found cents multiplied by 100 in transfer replay",
+    "same_prompt_model_fixed_it": true,
+    "stage_final_check_passed": true,
+    "external_feedback_sent": false
+  },
+  "conclusion": "The new prompt did not eliminate the observed plan-only stop. A no-Goal controlled task also stopped without tools; this occurrence cannot be attributed only to Goal continuation.",
+  "limits": [
+    "One run, not a reliability comparison against the baseline.",
+    "No capture of original school SSE or first-hop/relay request and response bodies; client evidence cannot prove that all upstream raw tool formats were absent.",
+    "Observed context was roughly 28k reported tokens, not the private 440k-token user conversation.",
+    "Stages 10-20 were not executed; no 20-stage success claim.",
+    "Task involved code and ledger data, not multi-image revalidation."
+  ],
+  "local_evidence": {
+    "run": ".validation-runtime/omp-kimi-k3-kw7a9y_4",
+    "control": ".validation-runtime/kimi-action-long-control-20261027-132957"
+  },
+  "retention": {
+    "user_choice": "Keep core evidence; remove temporary environment and checker databases",
+    "retained": ["summary.json", "omp-events.jsonl", "sessions", "stage-* checks and attempts", "workspace", "tool-policy.yml", "omp-stderr.log", "control/deployment.json", "activation record"],
+    "removed": ["temporary launcher", "agent configuration and caches", "isolated HOME, TEMP, APPDATA and LOCALAPPDATA", "run/db-* checker sandboxes"],
+    "cleanup_complete": true,
+    "ready_to_rerun_entry_retained": false,
+    "checker_database_snapshots_retained": false,
+    "formal_services_stopped_by_cleanup": false
+  },
+  "privacy": "Only controlled fixture metadata, counts, sanitized timings and a short plan excerpt are published. No credentials, original user project history, raw model reasoning or tool parameter values."
+}

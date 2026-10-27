@@ -22,7 +22,7 @@
 ## 部署与接入
 
 > [!NOTE]
-> 当前为 `fix/streaming-repair-image-history` 候选分支；`main` 保持实时输出回退版。测试新方案时，两仓库均检出同名候选分支。
+> 当前为 `fix/kimi-action-prompt` 独立试验分支，继承 WebP 兼容修复并调整工具提示；`main` 保持回退版，流式设计不变。测试时两仓库均检出同名分支。
 > 需学校 GenAI 网页权限，无需申请模型厂商或学校独立 API Key。
 
 ### 快速开始
@@ -32,8 +32,8 @@
 #### 1. 第一跳（shanghaitech-genai2api）
 
 ```bash
-git clone --branch fix/streaming-repair-image-history https://github.com/FrozenYears/shanghaitech-genai2api.git
-git clone --branch fix/streaming-repair-image-history https://github.com/FrozenYears/genai2agent-relay.git
+git clone --branch fix/kimi-action-prompt https://github.com/FrozenYears/shanghaitech-genai2api.git
+git clone --branch fix/kimi-action-prompt https://github.com/FrozenYears/genai2agent-relay.git
 cd shanghaitech-genai2api
 pixi install
 cp .env.example .env
@@ -203,7 +203,7 @@ flowchart LR
 两跳名称沿用项目约定：客户端请求先到第二跳 relay，再到第一跳。
 
 - 本仓库：网页登录、附件处理、网页请求与严格工具解析。
-- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/fix/streaming-repair-image-history)：协议转换，结构化工具与 SSE 转发。
+- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/fix/kimi-action-prompt)：协议转换，结构化工具与 SSE 转发。
 - 本地 agent：执行工具、读写文件、运行命令；代理不执行这些操作。
 
 ### 网页模型如何调用工具
@@ -231,6 +231,8 @@ flowchart LR
 - 已显示的正文/思考保留，不撤回或隐藏。正常结束后发现坏工具批次时，只纠错尚未交付的批次；可能显示各次生成进度。已交付工具、断流、网络错误、截断、取消或到期不重放，预算耗尽返回真实错误。
 - [可选 omp 监督器](docs/USAGE.md#可选的-omp-任务监督)根据独立验收自动反馈续作；预算耗尽即保存状态退出，不自动接管其它客户端。
 - [本分支验收](validation/streaming-images-2026-10-26.json)：593 项回归，以及真实 Kimi 多次读 WebP、同会话报错后不清历史继续；不替代旧版20阶段记录。
+- 本次试验明确普通文本动作协议，要求当前请求需要操作时当轮调用，包含全部必填字段。`required/指定工具`只返回计划或引用时按原预算反馈重生成；`auto`的普通答复仍可正常结束，代码围栏不自动执行。
+- [提示试验记录](validation/kimi-action-prompt-2026-10-27.json)：611 项回归、真实 omp 计划/执行切换和实际编辑通过。固定场景中新旧提示都通过，尚未证明能消除原长会话停滞。
 
 > [!IMPORTANT]
 > `native` 仅指两跳间的结构化传输，学校网页仍需文本适配。

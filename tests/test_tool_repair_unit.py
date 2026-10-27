@@ -301,6 +301,36 @@ def test_required_tool_repairs_after_visible_plan_without_repeating_it(monkeypat
     assert sum(event.get("content") == "Visible plan." for event in events) == 1
 
 
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("kind", ["plan", "fenced"])
+def test_required_plan_or_quoted_call_is_corrected_without_executing_the_quote(monkeypatch, protocol, stream, kind):
+    quote = "```json\n" + action({"path": "example-only.txt", "content": "must not execute"}) + "\n```"
+    rejected = "I will write the file next." if kind == "plan" else quote
+    requests_seen, _ = patch_generations(monkeypatch, [generation(content=rejected), generation(content=action(PARAMETERS))])
+    path, body = request_body(protocol, stream)
+    body["tool_choice"] = {"type": "any"} if protocol == "messages" else "required"
+    response = create_app(Config(Token(), 0, None, False)).test_client().post(path, json=body)
+    assert calls_from(response, protocol, stream) == [PARAMETERS]
+    assert len(requests_seen) == 2
+    assert requests_seen[1]["messages"] == requests_seen[0]["messages"]
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_auto_documentation_quote_does_not_trigger_a_tool_or_regeneration(monkeypatch, protocol, stream):
+    quote = "Example only, do not execute:\n```json\n" + action(PARAMETERS) + "\n```"
+    requests_seen, _ = patch_generations(monkeypatch, [generation(content=quote)])
+    path, body = request_body(protocol, stream)
+    if protocol == "responses":
+        body["input"] = "Explain the tool format without executing it."
+    else:
+        body["messages"] = [{"role": "user", "content": "Explain the tool format without executing it."}]
+    response = create_app(Config(Token(), 0, None, False)).test_client().post(path, json=body)
+    assert calls_from(response, protocol, stream) == []
+    assert len(requests_seen) == 1
+
+
 @pytest.mark.parametrize("first", ["empty", "bad"])
 def test_exhausted_shared_deadline_prevents_any_next_generation(monkeypatch, first):
     clock = [0.0]

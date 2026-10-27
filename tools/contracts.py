@@ -130,7 +130,13 @@ def validate_tool_calls(calls, tools, tool_choice=None, parallel_tool_calls=True
     if choice == "none" and calls:
         raise ToolContractError("Tool calls are disabled", feedback="原请求禁止工具调用；请只返回最终答复。")
     if (choice == "required" or named is not None) and not calls:
-        raise ToolContractError("Required tool call was not returned", feedback="原请求明确要求调用工具，但未返回任何完整调用。")
+        raise ToolContractError(
+            "Required tool call was not returned",
+            feedback=("原请求明确要求调用工具，但客户端没有收到任何完整可执行调用。"
+                      "仅有计划、承诺或引用/代码围栏中的示例不算调用。"
+                      "保留原工具选择与参数约束，立即输出完整JSON调用封套，以裸 @@ACTION@@ 开头、@@END_ACTION@@ 结尾；"
+                      "不要加 Markdown 围栏，包含全部必填字段，不猜参数或虚构执行结果。"),
+        )
     if not parallel_tool_calls and len(calls) > 1:
         raise ToolContractError("Parallel tool calls are disabled", feedback="原请求禁止并行调用；一个批次只能包含一个调用。")
     result = []

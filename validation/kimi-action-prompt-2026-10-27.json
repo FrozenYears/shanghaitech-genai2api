@@ -1,0 +1,300 @@
+{
+  "date": "2026-10-27",
+  "branch": "fix/kimi-action-prompt",
+  "base_commits": {
+    "first_hop": "06cb4924d075a6c9c48b4326cb64ce02abbd2464",
+    "relay": "3a2685c9a7178ab2b8fb130b9892cadb3ac3e22a"
+  },
+  "changes": [
+    "Explicit ordinary-text action transport instead of ambiguous model-specific native-channel selection",
+    "Request the actual operation in the current response when action is requested; explanations and expressly requested planning remain allowed",
+    "Require every schema-required field, including metadata; no Markdown fence or text after the envelope",
+    "Clarify existing required/named-tool missing-call feedback without changing validation, retry counts or execution policy"
+  ],
+  "unchanged": {
+    "streaming_implementation": true,
+    "whole_generation_buffering": false,
+    "text_and_reasoning_incremental_delivery": true,
+    "tool_batch_atomic_validation": true,
+    "quoted_examples_auto_executed": false,
+    "global_auto_to_required_conversion": false,
+    "empty_continuations": 8,
+    "tool_repairs": 3,
+    "shared_deadline_seconds": 900,
+    "streaming_file_git_blobs": {
+      "provider/genai.py": "bfd5ddec842d5d66ad3ee508a8185de286f4f835",
+      "provider/streaming.py": "bc021a24a3b6e4e37963b82c6ec1d09a434dd4bc",
+      "tools/parsing.py": "189127b1ed51530a58424d64fb2d74845e0823b7"
+    }
+  },
+  "regression": {
+    "first_hop_passed": 611,
+    "added_behavior_cases": 18,
+    "coverage": "Three protocols, streaming/non-streaming: required plan/fenced responses regenerate without executing the quote; auto documentation quote completes without calls or regeneration"
+  },
+  "model": "GenAI/Kimi-k3",
+  "long_reference_chars": 323237,
+  "generation_only": [
+    {
+      "case": "direct_read",
+      "variant": "baseline",
+      "choice": "auto",
+      "calls": 1,
+      "finish": "tool_calls",
+      "error": null,
+      "generations": 1,
+      "validation_errors": [],
+      "calls_preserved_across_hops": true,
+      "expected_behavior": true,
+      "elapsed_s": 1.953
+    },
+    {
+      "case": "direct_read",
+      "variant": "candidate",
+      "choice": "auto",
+      "calls": 1,
+      "finish": "tool_calls",
+      "error": null,
+      "generations": 1,
+      "validation_errors": [],
+      "calls_preserved_across_hops": true,
+      "expected_behavior": true,
+      "elapsed_s": 1.875
+    },
+    {
+      "case": "after_plan",
+      "variant": "baseline",
+      "choice": "auto",
+      "calls": 1,
+      "finish": "tool_calls",
+      "error": null,
+      "generations": 1,
+      "validation_errors": [],
+      "calls_preserved_across_hops": true,
+      "expected_behavior": true,
+      "elapsed_s": 1.735
+    },
+    {
+      "case": "after_plan",
+      "variant": "candidate",
+      "choice": "auto",
+      "calls": 1,
+      "finish": "tool_calls",
+      "error": null,
+      "generations": 1,
+      "validation_errors": [],
+      "calls_preserved_across_hops": true,
+      "expected_behavior": true,
+      "elapsed_s": 2.656
+    },
+    {
+      "case": "after_real_read",
+      "variant": "baseline",
+      "choice": "auto",
+      "calls": 1,
+      "finish": "tool_calls",
+      "error": null,
+      "generations": 1,
+      "validation_errors": [],
+      "calls_preserved_across_hops": true,
+      "expected_behavior": true,
+      "elapsed_s": 2.469
+    },
+    {
+      "case": "after_real_read",
+      "variant": "candidate",
+      "choice": "auto",
+      "calls": 1,
+      "finish": "tool_calls",
+      "error": null,
+      "generations": 1,
+      "validation_errors": [],
+      "calls_preserved_across_hops": true,
+      "expected_behavior": true,
+      "elapsed_s": 2.422
+    },
+    {
+      "case": "long_after_real_empty_audit",
+      "variant": "baseline",
+      "choice": "auto",
+      "calls": 1,
+      "finish": "tool_calls",
+      "error": null,
+      "generations": 1,
+      "validation_errors": [],
+      "calls_preserved_across_hops": true,
+      "expected_behavior": true,
+      "elapsed_s": 56.657
+    },
+    {
+      "case": "long_after_real_empty_audit",
+      "variant": "candidate",
+      "choice": "auto",
+      "calls": 1,
+      "finish": "tool_calls",
+      "error": null,
+      "generations": 1,
+      "validation_errors": [],
+      "calls_preserved_across_hops": true,
+      "expected_behavior": true,
+      "elapsed_s": 53.828
+    },
+    {
+      "case": "required_after_plan",
+      "variant": "baseline",
+      "choice": "required",
+      "calls": 1,
+      "finish": "tool_calls",
+      "error": null,
+      "generations": 1,
+      "validation_errors": [],
+      "calls_preserved_across_hops": true,
+      "expected_behavior": true,
+      "elapsed_s": 9.719
+    },
+    {
+      "case": "required_after_plan",
+      "variant": "candidate",
+      "choice": "required",
+      "calls": 1,
+      "finish": "tool_calls",
+      "error": null,
+      "generations": 1,
+      "validation_errors": [],
+      "calls_preserved_across_hops": true,
+      "expected_behavior": true,
+      "elapsed_s": 2.031
+    },
+    {
+      "case": "documentation_only",
+      "variant": "baseline",
+      "choice": "auto",
+      "calls": 0,
+      "finish": "stop",
+      "error": null,
+      "generations": 1,
+      "validation_errors": [],
+      "calls_preserved_across_hops": true,
+      "expected_behavior": true,
+      "elapsed_s": 2.719
+    },
+    {
+      "case": "documentation_only",
+      "variant": "candidate",
+      "choice": "auto",
+      "calls": 0,
+      "finish": "stop",
+      "error": null,
+      "generations": 1,
+      "validation_errors": [],
+      "calls_preserved_across_hops": true,
+      "expected_behavior": true,
+      "elapsed_s": 2.203
+    }
+  ],
+  "real_omp": [
+    {
+      "phase": 0,
+      "completion": "completed",
+      "tools": [],
+      "tool_errors": 0,
+      "expected_ast": true,
+      "session_settled": true,
+      "elapsed_s": 4.734
+    },
+    {
+      "phase": 1,
+      "completion": "completed",
+      "tools": [
+        "read",
+        "edit",
+        "read"
+      ],
+      "tool_errors": 0,
+      "expected_ast": true,
+      "session_settled": true,
+      "elapsed_s": 14.312
+    },
+    {
+      "phase": 2,
+      "completion": "completed",
+      "tools": [
+        "edit",
+        "read"
+      ],
+      "tool_errors": 0,
+      "expected_ast": true,
+      "session_settled": true,
+      "elapsed_s": 10.047
+    }
+  ],
+  "real_omp_passed": true,
+  "candidate_generation_cases_passed": true,
+  "limitations": [
+    "Small paired samples, not causal or statistical proof of improved reliability.",
+    "Long synthetic background is not the private 440k-token production conversation.",
+    "No supervisor or automatic user feedback; streamed failed-generation progress is not hidden."
+  ],
+  "paired_comparison": {
+    "baseline_expected_cases": 6,
+    "baseline_passed": 6,
+    "candidate_expected_cases": 6,
+    "candidate_passed": 6,
+    "observed_superiority": false,
+    "conclusion": "Both prompt versions passed this small fixed set. This does not reproduce or prove resolution of the private long-context stall."
+  },
+  "controlled_required_recovery": {
+    "fault_injection": true,
+    "then_real_school_model": "Kimi-k3",
+    "cases": [
+      {
+        "initial_response": "plan",
+        "injected_generations": 1,
+        "actual_school_generations": 1,
+        "delivered_calls": 1,
+        "first_reasoning_before_initial_generation_done": true,
+        "all_hop_argument_signatures_match": true
+      },
+      {
+        "initial_response": "fenced envelope",
+        "injected_generations": 1,
+        "actual_school_generations": 1,
+        "delivered_calls": 1,
+        "first_reasoning_before_initial_generation_done": true,
+        "all_hop_argument_signatures_match": true
+      }
+    ],
+    "client_tools_executed": 0,
+    "limit": "These failing first generations were deliberately injected; not natural model-failure recoveries."
+  },
+  "real_generated_code_behavior": {
+    "results": [
+      14,
+      20,
+      16
+    ],
+    "passed": true,
+    "execution_guard": "Generated AST exactly matched the trusted expected two-line function before execution with only sum available"
+  },
+  "verification_environment": {
+    "isolated_loopback_servers": true,
+    "client_auto_retry": false,
+    "supervisor_user_feedback": false,
+    "private_user_projects_executed": false,
+    "formal_services_changed_during_tests": false,
+    "global_omp_configuration_changed": false,
+    "test_first_hop_empty_continuations": 0,
+    "test_first_hop_tool_repairs": 3,
+    "test_first_hop_deadline_seconds": 120
+  },
+  "privacy": "Only fixed fixture metadata and sanitized counts are published. No credentials, raw private project history, model reasoning, or tool parameter values are included.",
+  "local_evidence": ".validation-runtime/kimi-action-prompt/run-20261027-084000",
+  "retention": {
+    "user_choice": "Keep core evidence; remove temporary environment",
+    "retained": ["summary.json", "omp-events.jsonl", "sessions", "omp-stderr.log", "workspace"],
+    "removed": ["trial.py", "agent", "home", "tmp", "local", "roaming"],
+    "cleanup_complete": true,
+    "ready_to_rerun_entry_retained": false
+  },
+  "capture_limit": "Raw SSE observations cover events consumed up to the first-hop recognized terminal; they do not reconstruct the old failure or drain post-terminal tails."
+}

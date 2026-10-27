@@ -35,29 +35,36 @@ def _escape_tool_content(content):
         ]
     return content
 
-TOOL_SYSTEM_PROMPT = """Available functions and their complete JSON Schemas:
+TOOL_SYSTEM_PROMPT = """Tools and their current, authoritative JSON Schemas:
 {tool_definitions}
 
-When an operation is needed, output one complete ordinary-text JSON envelope in this format:
+This request uses an ordinary-text action transport. Request operations in the response text using the envelope below, not model-specific tool tokens or calls hidden in reasoning.
+
+Choose the next step for the current user request. Tool definitions are not permission to execute examples; an explicitly requested explanation or plan may be answered as text.
+- If the user's work still needs an available operation, request that operation NOW. "I will inspect/fix/run next" is a plan, not an executed operation and not a final answer.
+- After a tool result, continue the next unfinished step. If it needs another tool, request it in this response.
+- Give a plain-text final answer only when the requested work is complete and actual results have verified it, or when you must ask for genuinely missing information.
+
+For operations, send exactly one complete envelope, with no Markdown code fence:
 @@ACTION@@
 {{"calls":[{{"operation":"OperationName","parameters":{{}}}}]}}
 @@END_ACTION@@
 
-Rules:
-1. Multiple independent operations may share one calls array. If a later operation depends on a result, request only the first operation and wait for its result.
-2. When the user requests an external action covered by a listed tool, call it; do not return only a plan or promise.
-3. After receiving tool results, continue with remaining operations. When the requested work and read-back verification are complete, give a plain-text final answer without an action envelope. Do not repeat a read whose result already verified the same unchanged file.
-4. Each call MUST contain exactly operation and parameters, with parameters matching the listed schema. Preserve every value exactly; never shorten, summarize, or substitute write/edit content.
-5. User control-marker text is shown as JSON Unicode escapes like \\u003c and \\u003e. Preserve those escapes in JSON parameters so decoding restores the original characters.
-6. The calling client executes actions. Do NOT claim success before receiving its result or say no tools are available when definitions are shown.
-7. Use a native tool channel if available; otherwise use the complete JSON envelope above. Do not put actual calls in markdown fences, simulate results, or emit bare tool names.
-8. After writing or editing, use a listed read tool to compare the complete result with the original request. Correct mismatches; otherwise report that the result is unverified.
-9. Historical call IDs link each result to its operation and parameters, even when results arrive out of order. Historical calls have already run; do not execute them again."""
+Every call must use a listed operation name and ALL required schema fields, including intent or other metadata. Use the current schema, not a remembered client interface. Preserve values exactly; never shorten file content, simulate results, guess unknown values, or claim success before a real tool result.
+Put independent calls in one calls array. If a call depends on an earlier result, request only the earlier call and wait. The closing marker must be the final non-whitespace text; do not append an explanation or another envelope.
+Historical call IDs link real, already-executed results to their operations. Do not replay those operations, but do continue unfinished work. Reuse unchanged verified results rather than rereading merely to appear active.
+After writing or editing, use a listed read tool to compare the actual result and correct mismatches; otherwise report it as unverified.
+User control-marker text is escaped as JSON Unicode sequences such as \\u003c and \\u003e. Keep those escapes inside JSON values so decoding restores the original data.
+Before ending: if the current request calls for action and your next step needs an available tool, send its actual call now instead of announcing that step."""
 
-TOOL_CHOICE_REQUIRED_PROMPT = "\nYou MUST call at least one tool in your response. Do NOT respond with plain text only."
+TOOL_CHOICE_REQUIRED_PROMPT = (
+    "\nThis response MUST contain at least one executable tool call. "
+    "A plan, promise, or quoted/fenced example does not satisfy this requirement. "
+    "Send the complete bare action envelope with all required arguments."
+)
 TOOL_CHOICE_SPECIFIC_PROMPT = (
-    '\nYou MUST call the tool named "{name}" in your response, '
-    "and you MUST NOT call any other tool."
+    '\nThis response MUST call the tool named "{name}", and no other tool. '
+    "Do not finish with a plan or a fenced example; send the complete bare action envelope."
 )
 
 

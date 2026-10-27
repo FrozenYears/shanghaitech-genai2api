@@ -6,7 +6,7 @@
 
 - `api/chat.py`、`api/messages.py`、`api/responses.py` 分别处理三种客户端协议。
 - `tools/prompts.py` 统一文本、图片和文档内容块；`flatten_message_content` 只用于提取文本，不能替代附件处理。
-- `provider/features.py` 在开始 SSE 前完成附件上传、文件解析及思考/搜索开关映射。当前图片使用顶层 `imageUrls` 和上传结果的宽高；历史图片保留在原消息的内容数组中，一个合并文本块后跟图片块，与网页协议一致。当前轮文档上传和聊天必须使用同一 `chatGroupId`，不假定文件标识可以跨会话复用。
+- `provider/features.py` 在开始 SSE 前完成附件处理及思考/搜索映射，内联静态 WebP 统一无损转 PNG，保留解码像素、透明度与 ICC/EXIF。单张当前图片用顶层字段；当前多图在 `provider/genai.py` 追加为当前 user 的图像上下文，`chatInfo` 只承载文本，避免首图字段遮蔽其他图片。历史图片仍在原消息内容数组中，不删历史或合成缩图。当前轮文档上传和聊天必须使用同一 `chatGroupId`，不假定文件标识跨会话复用。
 - `provider/genai.py` 是唯一聊天流入口；三种输出适配层共用它的 delta/done/error 事件。搜索的补充结果通过正文增量追加，编号不与主回答直接配对。
 - 模型能力来自 `ModelRegistry` 的平台元数据，不按模型名硬编码。思考仅支持布尔开关，不宣称精确 effort/budget 支持。
 

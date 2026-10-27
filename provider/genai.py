@@ -187,10 +187,17 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
         "maxToken": max_tokens or 30000,
         **(upstream_options or {}),
     }
+    images = genai_data.get("imageUrls")
+    if images and len(images) > 1:
+        # 顶层首图字段可能遮蔽其余图片；用已验证的多模态消息承载当前轮全部图片。
+        content = [{"type": "text", "text": ""}]
+        content.extend({"type": "image_url", "image_url": {"url": url, "detail": "high"}} for url in images)
+        genai_data["messages"] = [*genai_data["messages"], {"role": "user", "content": content}]
+        genai_data.update(imageUrl="", imageUrls=[])
 
     logger.debug("=== GenAI Request ===")
     logger.debug("Model: %s, rootAiType: %s", model, root_ai_type)
-    logger.debug("Messages count: %d", len(history_messages))
+    logger.debug("Messages count: %d", len(genai_data["messages"]))
 
     response = None
     try:

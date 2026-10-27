@@ -130,3 +130,10 @@ Chat Completions、Anthropic Messages、OpenAI Responses 共用图片/文档上�
 - `python -m compileall` 与 `git diff --check` 通过。
 
 日志新增附件数量、上传字节数、解析长度、准备耗时及功能开关；不输出文件原文、base64 或用户令牌。
+
+## 2026-10-27：main 回退基线的图片兼容修复
+
+独立`fix/streaming-tool-webp-stepwise`不更新main。所有内联静态WebP统一转换为PNG，保留解码像素、alpha及ICC/EXIF；不缩图、不删历史，动画拒绝，超像素画布在解码器创建前拒绝。PNG、JPEG和远程URL原样保留，不声称XMP全量或请求总内存有界。
+
+真实Kimi/omp在同一会话先复现历史WebP错误，启用转换后纯文字继续、读取B、更新A后重读及回忆均成功。当前同轮多图改用一个user图像上下文，图片与文本各传一次；7例内容/像素/顺序正确，严格格式6例通过，一例Markdown加粗失败保留。根665项回归、relay89项及259子测试通过，Linux仅做锁检查，无运行验证。具体阶段、失败与未证明事项见[脱敏证据](../validation/stepwise-streaming-webp-2026-10-27.json)。
+

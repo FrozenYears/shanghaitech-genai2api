@@ -106,6 +106,17 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
                 for event in events:
                     if control.cancelled.is_set():
                         return
+                    # 已进入坏调用纠错的 auto 请求不能用纯正文放弃未交付批次。
+                    if (event["type"] == "done" and event.get("finish_reason") == "stop"
+                            and repair_count and tool_choice in (None, "auto") and not event.get("tool_calls")):
+                        event = {
+                            "type": "error", "code": "tool_repair_incomplete",
+                            "message": "Tool repair ended without a call; the pending batch was not delivered",
+                            "repair_feedback": (
+                                "上一次工具调用尚未交付或执行，纠错后不能只给计划或正文就结束。"
+                                "请按原工具白名单和Schema生成完整合法调用；未知参数不要猜，不要虚构结果。"
+                            ),
+                        }
                     if event["type"] == "delta" and (event.get("content") or event.get("reasoning")):
                         delivered = True
                     if event["type"] != "error":
@@ -130,7 +141,8 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
                                        model, empty_count, empty_budget, repair_count, repair_budget)
                         break
                     feedback = event.get("repair_feedback")
-                    if tools and feedback and not delivered:
+                    # 正常终态的坏批次尚未交付；已显示正文或思考不等于工具已执行。
+                    if tools and feedback:
                         if repair_count >= repair_budget:
                             yield {key: value for key, value in {
                                 **event, "message": event["message"] + f"; tool repair recovery exhausted ({repair_count}/{repair_budget})"
@@ -140,6 +152,8 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
                         question = chat_info + (
                             f"\n\n本请求第 {repair_count}/{repair_budget} 次工具协议纠错。"
                             "本次坏调用整批尚未交付给客户端，也没有执行；没有工具结果可用。"
+                            "此前流式显示的正文或思考只是生成进度，不是本批工具的执行回执；"
+                            "保留这些已显示内容，只纠正本次尚未交付的工具批次，不必重复说明。"
                             f"安全校验错误：{feedback}"
                             "保留原问题、完整原历史、工具 schema、tool_choice 和并行约束，重新生成完整合法批次或允许的最终答复。"
                             "不要猜测或自动补齐未知参数，不要虚构执行结果，不要重复历史已经完成的操作。"
@@ -173,10 +187,17 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
         "maxToken": max_tokens or 30000,
         **(upstream_options or {}),
     }
+    images = genai_data.get("imageUrls")
+    if images and len(images) > 1:
+        # 顶层首图字段可能遮蔽其余图片；用已验证的多模态消息承载当前轮全部图片。
+        content = [{"type": "text", "text": ""}]
+        content.extend({"type": "image_url", "image_url": {"url": url, "detail": "high"}} for url in images)
+        genai_data["messages"] = [*genai_data["messages"], {"role": "user", "content": content}]
+        genai_data.update(imageUrl="", imageUrls=[])
 
     logger.debug("=== GenAI Request ===")
     logger.debug("Model: %s, rootAiType: %s", model, root_ai_type)
-    logger.debug("Messages count: %d", len(history_messages))
+    logger.debug("Messages count: %d", len(genai_data["messages"]))
 
     response = None
     try:

@@ -26,6 +26,7 @@ class OmpClient:
         self.workspace = workspace
         self.artifact_dir = artifact_dir
         self.last_state = None
+        self.last_result = None
         self.unusable = False
         self.command_pattern = command_pattern
         self.queue = queue.Queue()
@@ -168,6 +169,7 @@ class OmpClient:
     def prompt(self, text, timeout=1200):
         if self.unusable:
             raise FatalClientError('Previous turn did not safely settle', 'session_not_settled')
+        self.last_result = None
         started = time.monotonic()
         deadline = started + timeout
         state = self.assert_model(timeout=min(60, timeout))
@@ -180,10 +182,11 @@ class OmpClient:
         first_visible = None
 
         def result(completion, after):
-            return {'elapsed_s': round(time.monotonic() - started, 3),
-                    'first_model_event_s': round(first_stream, 3) if first_stream is not None else None,
-                    'first_text_s': round(first_visible, 3) if first_visible is not None else None,
-                    'completion': completion, 'before': state, 'after': after, 'events': events}
+            self.last_result = {'elapsed_s': round(time.monotonic() - started, 3),
+                                'first_model_event_s': round(first_stream, 3) if first_stream is not None else None,
+                                'first_text_s': round(first_visible, 3) if first_visible is not None else None,
+                                'completion': completion, 'before': state, 'after': after, 'events': events}
+            return self.last_result
 
         try:
             while True:

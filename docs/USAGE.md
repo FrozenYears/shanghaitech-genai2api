@@ -34,3 +34,13 @@ pixi run python -B validation/native-first-endurance/supervise.py \
 单请求恢复耗尽后，监督器可在剩余任务预算内自动开启下一回合。任务总时间或反馈预算耗尽时，保存 `result.json`、`checkpoint.json`、会话与验收记录，并非零退出。身份/权限故障，或超时 abort 后无法确认会话停稳，也会停止，避免并发提交。当前不支持跨进程自动恢复；它是可选入口，不会自动接管 Claude Code、Codex 或普通 omp 会话。
 
 
+### 内置20阶段验收的完成标准
+
+先启动同分支的31100/31110，并配置真实GenAI/Kimi-k3的omp。在Windows环境运行：
+
+```bash
+pixi run python -B validation/native-first-endurance/run.py run --model Kimi-k3 --stages 20 --max-feedback 0 --max-minutes 45 --stage-timeout 1200
+```
+
+该runner既独立运行累计业务检查，也核对模型实际调用指定验收命令的工具回执。最后一次源码修改后须重新成功验收；仅说“接下来运行”或事后由控制器检查通过，不算模型完成全部工作流。单独`verify`子命令仍只检查业务，避免递归要求自己的工具回执。`--max-feedback 0`失败即停，不自动发送“继续”；旧报告中的业务通过数不等于满足本轮新增的完整执行条件。
+

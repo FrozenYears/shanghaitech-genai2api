@@ -22,7 +22,7 @@
 ## 部署与接入
 
 > [!NOTE]
-> 两个仓库均使用 `main` 分支，安装时保持版本一致。
+> 当前为 `fix/streaming-tool-webp-stepwise` 渐进修复分支，从两仓库 main 回退版开始；未授权合并时不更新 main。两仓库部署时使用同名分支，正文和思考保持即时流式。
 > 需学校 GenAI 网页权限，无需申请模型厂商或学校独立 API Key。
 
 ### 快速开始
@@ -32,8 +32,8 @@
 #### 1. 第一跳（shanghaitech-genai2api）
 
 ```bash
-git clone --branch main https://github.com/FrozenYears/shanghaitech-genai2api.git
-git clone --branch main https://github.com/FrozenYears/genai2agent-relay.git
+git clone --branch fix/streaming-tool-webp-stepwise https://github.com/FrozenYears/shanghaitech-genai2api.git
+git clone --branch fix/streaming-tool-webp-stepwise https://github.com/FrozenYears/genai2agent-relay.git
 cd shanghaitech-genai2api
 pixi install
 cp .env.example .env
@@ -203,7 +203,7 @@ flowchart LR
 两跳名称沿用项目约定：客户端请求先到第二跳 relay，再到第一跳。
 
 - 本仓库：网页登录、附件处理、网页请求与严格工具解析。
-- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/main)：协议转换，结构化工具与 SSE 转发。
+- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/fix/streaming-tool-webp-stepwise)：协议转换，结构化工具与 SSE 转发。
 - 本地 agent：执行工具、读写文件、运行命令；代理不执行这些操作。
 
 ### 网页模型如何调用工具
@@ -228,8 +228,11 @@ flowchart LR
 - 正文与思考即时流式返回；工具参数收全且整批校验通过后才交付。已撤销整代缓冲，不再为了隐藏失败尝试而延后全部内容。
 - 支持图片、文档、网页搜索与思考开关，格式与限制见[下方说明](#图片文档搜索与思考)。
 - 第一跳默认最多额外空继续 **8 次**、未交付坏调用纠错 **3 次**，共用 **900 秒**请求窗口；计数不重置，relay native 不叠加重试。
-- 当前回退版本在已交付正文/思考后不再纠错；断流、网络错误、截断、取消或到期均不重放，预算耗尽返回真实错误。
+- 已显示正文/思考保留，不撤回或整代暂存。正常终态的未交付坏工具批次仍可在原预算内纠错；已交付工具、断流、网络错误、截断、取消或到期不重放，预算耗尽返回真实错误。
+- 已进入坏调用纠错的 `auto` 请求不能再以纯正文放弃待交付批次；在原预算内继续纠正，耗尽以 `tool_repair_incomplete` 报错。此防线不把所有 `auto` 问答改成强制调用，业务完成仍须独立验收。
 - [可选 omp 监督器](docs/USAGE.md#可选的-omp-任务监督)根据独立验收自动反馈续作；预算耗尽即保存状态退出，不自动接管其它客户端。
+- [分阶段修复证据](validation/stepwise-streaming-webp-2026-10-27.json)保留基线失败、正常结束零调用、真实纠错、图片回忆及格式不符记录。完整任务须同时核对独立业务结果与模型实际运行验收命令的回执，不把“正在执行”当作执行完成。
+- 本分支代码`2360089`/relay`cb86e44`的隔离真实Kimi/omp长测：2060.25秒完成20/20阶段，71项累计业务检查及每阶段实际验收命令回执全部通过；75次模型请求、95工具、零外部追问，未观察到业务未完成却零调用正常结束。一次坏封套自然纠正、两次业务验收报错均在原工具循环恢复。单次通过不保证所有auto任务永不停顿；正式服务本轮未切换。
 
 > [!IMPORTANT]
 > `native` 仅指两跳间的结构化传输，学校网页仍需文本适配。
@@ -239,10 +242,12 @@ flowchart LR
 
 | 功能 | 输入与处理 | 边界 |
 | --- | --- | --- |
-| 图片 | URL、data URL 或协议图片块；历史图片保留在原轮次 | 内联单张小于 20 MiB；效果与延迟取决于上游 |
+| 图片 | URL、data URL 或协议图片块；内联静态 WebP 转 PNG，历史图片原位保留，当前多图用消息图片块 | WebP及PNG产物均须小于20 MiB；动画明确拒绝；远程WebP与更多组合不作保证 |
 | 文档 | 内联 base64、data URL 或 HTTP(S) URL；当前轮上传与聊天共用会话 | 小于 10 MiB；历史文档用平台解析文本恢复，扫描件效果不保证 |
 | 搜索 | `web_search: true` 或受支持的搜索声明，映射为网页搜索 | 正文来源与补充结果分别标注，不实现厂商托管搜索工具的完整流程 |
 | 思考 | `thinking: true/false`，其他推理参数映射为布尔开关 | 不支持精确 effort 档位或 token budget；只透传独立思考字段 |
+
+WebP转换保留解码后的尺寸、像素、透明度及ICC/EXIF，不缩图、不拼接或省略图片；不宣称文件字节或全部XMP元数据不变。PNG、JPEG和远程URL不重编码。当前多图的文本只放在`chatInfo`，图片按原顺序放入本轮图像上下文，不重复用户问题或挪动历史图片。
 
 <details>
 <summary>展开各协议的开关与 Chat 附件示例</summary>

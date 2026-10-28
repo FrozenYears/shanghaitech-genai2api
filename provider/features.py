@@ -5,9 +5,11 @@ import logging
 import mimetypes
 import time
 import uuid
+from io import BytesIO
 from urllib.parse import unquote, urljoin, urlparse
 
 import requests
+from PIL import Image, WebPImagePlugin
 
 from config import build_genai_headers
 from errors import UpstreamError
@@ -158,6 +160,41 @@ def upload_document(file, token, model, group):
     return result, filename
 
 
+class _ImageOutput(BytesIO):
+    def write(self, data):
+        if self.tell() + len(data) >= IMAGE_LIMIT:
+            raise ValueError("图片转为 PNG 后必须小于 20 MiB")
+        return super().write(data)
+
+
+def _compatible_image_url(url):
+    """统一转换内联静态 WebP，保留当前轮与历史图片的解码像素及透明度。"""
+    if url[:16].lower() != "data:image/webp;":
+        return url
+    raw, _ = decode_file(url, "", IMAGE_LIMIT)
+    started = time.monotonic()
+    # Pillow 13 的头部读取不创建解码器；先拒绝超限画布，避免只在分配后检查。
+    size = WebPImagePlugin._get_size(raw[:30])
+    pixel_limit = Image.MAX_IMAGE_PIXELS
+    if size and pixel_limit is not None and size[0] * size[1] > pixel_limit:
+        raise ValueError("WebP 像素数量超过安全解码上限")
+    try:
+        with Image.open(BytesIO(raw), formats=["WEBP"]) as image:
+            if getattr(image, "is_animated", False):
+                raise ValueError("动画 WebP 无法无损转为单张 PNG，请使用静态图片")
+            if pixel_limit is not None and image.width * image.height > pixel_limit:
+                raise ValueError("WebP 像素数量超过安全解码上限")
+            with _ImageOutput() as output:
+                metadata = {key: image.info[key] for key in ("icc_profile", "exif") if key in image.info}
+                image.save(output, format="PNG", **metadata)
+                converted = output.getvalue()
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("WebP 图片无法解码，请重新发送有效图片") from exc
+    logger.info("image normalized count=1 bytes_in=%d bytes_out=%d prepare_ms=%.0f",
+                len(raw), len(converted), (time.monotonic() - started) * 1000)
+    return "data:image/png;base64," + base64.b64encode(converted).decode("ascii")
+
+
 def prepare_request(messages, model, config, body, api_format):
     """在开始响应前完成附件处理，保留历史多模态输入并生成当前轮参数。"""
     options = request_options(body, api_format)
@@ -181,7 +218,7 @@ def prepare_request(messages, model, config, body, api_format):
                 elif part["type"] == "image_url":
                     image_count += 1
                     # 平台自己会读取 data URL 或公网 URL，不需要图片服务，也不需要宽高。
-                    url = part["image_url"]["url"]
+                    url = _compatible_image_url(part["image_url"]["url"])
                     if url.startswith("data:") and len(url) > IMAGE_LIMIT * 4 // 3 + 1024:
                         raise ValueError("内联图片必须小于 20 MiB")
                     if index == last_user:

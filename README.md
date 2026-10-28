@@ -22,7 +22,7 @@
 ## 部署与接入
 
 > [!NOTE]
-> 当前为 `fix/streaming-tool-webp-stepwise` 渐进修复分支，从两仓库 main 回退版开始；未授权合并时不更新 main。两仓库部署时使用同名分支，正文和思考保持即时流式。
+> 两仓库 `main` 已按用户授权合入实时工具纠错与 WebP/多图修复，部署时保持两仓库版本一致。正文和思考仍即时流式输出；后续未经用户主动要求，不再自动更新 main。
 > 需学校 GenAI 网页权限，无需申请模型厂商或学校独立 API Key。
 
 ### 快速开始
@@ -32,8 +32,8 @@
 #### 1. 第一跳（shanghaitech-genai2api）
 
 ```bash
-git clone --branch fix/streaming-tool-webp-stepwise https://github.com/FrozenYears/shanghaitech-genai2api.git
-git clone --branch fix/streaming-tool-webp-stepwise https://github.com/FrozenYears/genai2agent-relay.git
+git clone --branch main https://github.com/FrozenYears/shanghaitech-genai2api.git
+git clone --branch main https://github.com/FrozenYears/genai2agent-relay.git
 cd shanghaitech-genai2api
 pixi install
 cp .env.example .env
@@ -203,7 +203,7 @@ flowchart LR
 两跳名称沿用项目约定：客户端请求先到第二跳 relay，再到第一跳。
 
 - 本仓库：网页登录、附件处理、网页请求与严格工具解析。
-- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/fix/streaming-tool-webp-stepwise)：协议转换，结构化工具与 SSE 转发。
+- [relay](https://github.com/FrozenYears/genai2agent-relay/tree/main)：协议转换，结构化工具与 SSE 转发。
 - 本地 agent：执行工具、读写文件、运行命令；代理不执行这些操作。
 
 ### 网页模型如何调用工具
@@ -232,7 +232,7 @@ flowchart LR
 - 已进入坏调用纠错的 `auto` 请求不能再以纯正文放弃待交付批次；在原预算内继续纠正，耗尽以 `tool_repair_incomplete` 报错。此防线不把所有 `auto` 问答改成强制调用，业务完成仍须独立验收。
 - [可选 omp 监督器](docs/USAGE.md#可选的-omp-任务监督)根据独立验收自动反馈续作；预算耗尽即保存状态退出，不自动接管其它客户端。
 - [分阶段修复证据](validation/stepwise-streaming-webp-2026-10-27.json)保留基线失败、正常结束零调用、真实纠错、图片回忆及格式不符记录。完整任务须同时核对独立业务结果与模型实际运行验收命令的回执，不把“正在执行”当作执行完成。
-- 本分支代码`2360089`/relay`cb86e44`的隔离真实Kimi/omp长测：2060.25秒完成20/20阶段，71项累计业务检查及每阶段实际验收命令回执全部通过；75次模型请求、95工具、零外部追问，未观察到业务未完成却零调用正常结束。一次坏封套自然纠正、两次业务验收报错均在原工具循环恢复。单次通过不保证所有auto任务永不停顿；正式服务本轮未切换。
+- 合入代码`2360089`/relay`cb86e44`的隔离真实Kimi/omp长测：2060.25秒完成20/20阶段，71项累计业务检查及每阶段实际验收命令回执全部通过；75次模型请求、95工具、零外部追问，未观察到业务未完成却零调用正常结束。一次坏封套自然纠正、两次业务验收报错均在原工具循环恢复。单次通过不保证所有auto任务永不停顿。10-27随后已启用该修复分支双跳，10-28按用户授权合入main；本次发布不重启服务。
 
 > [!IMPORTANT]
 > `native` 仅指两跳间的结构化传输，学校网页仍需文本适配。

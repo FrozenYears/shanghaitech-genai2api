@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### README 仓库互链
+
+- 两仓库 README 开头增加对方仓库地址，删除部署提示和实测段落中的协作过程说明；保留配置、实测数据与支持边界。
+
 ### 授权发布到 main（2026-10-28）
 
 - 按用户明确要求，将第一跳`ed8ad4f`与Relay`4287afb`的`fix/streaming-tool-webp-stepwise`完整历史分别合入各自main；保留独立分支，不重写或强推历史。

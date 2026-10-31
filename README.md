@@ -20,6 +20,7 @@
 - [实测与资料](#实测与资料)
   - [模型实测](#模型实测)
   - [更多文档](#更多文档)
+- [致谢](#致谢)
 - [LICENSE](#LICENSE)
 
 ## 部署与接入
@@ -343,7 +344,10 @@ Chat 的 `messages[].content` 可使用以下数组，需将 `...` 替换为真�
 
 测试命令：`pixi run test`。
 
-基于 [jollyxenon/shanghaitech-genai2api](https://github.com/jollyxenon/shanghaitech-genai2api) 与 [HeZeBang/GenAI2OpenAI](https://github.com/HeZeBang/GenAI2OpenAI)，感谢原作者的贡献！
+## 致谢
+
+本项目基于 [jollyxenon/shanghaitech-genai2api](https://github.com/jollyxenon/shanghaitech-genai2api) 与 [HeZeBang/GenAI2OpenAI](https://github.com/HeZeBang/GenAI2OpenAI) 开发，感谢原作者的工作！
 
 ## LICENSE
+
 [MIT](LICENSE)

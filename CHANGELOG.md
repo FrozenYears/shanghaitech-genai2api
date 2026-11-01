@@ -8,7 +8,7 @@
 - 标注 token 计数为本地估算，说明第一跳与 relay 的 Responses 计数接口差异及字符串输入的现有问题。
 - DeepSeek 模型名称更正为上游返回的 `DeepSeek-V4.1-Flash`，移除未经接口确认的版本后缀。
 - 模型表增加视觉和思考支持情况；GPT 语言模型、GLM 和 Kimi 两项均支持，DeepSeek 两项均不支持，Qwen 支持视觉、不支持思考，绘图模型单独标注。
-- 模型表增加上下文上限：GLM、DeepSeek 和 Kimi 为 1M，Qwen 为 512K，GPT 语言模型未测。
+- 模型表增加上下文上限：GLM、DeepSeek 和 Kimi 为 1M，Qwen 为 512K，GPT 语言模型按 OpenAI 官方规格标注 1.05M。
 
 ### 当前版本模型实测说明
 

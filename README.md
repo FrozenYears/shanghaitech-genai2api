@@ -141,7 +141,7 @@ curl -fsS http://127.0.0.1:31110/v1/models \
 | `GPT-Image-2` | GPT-Image-2.5-Sunburst |
 | `chatglm` | GLM-5.3-Flash |
 | `qwen-instruct` | Qwen-3.8 |
-| `deepseek-pro` | DeepSeek-V4.1-Flash-1017 |
+| `deepseek-pro` | DeepSeek-V4.1-Flash |
 | `Kimi-k3` | Kimi-K3 |
 
 ### 接口

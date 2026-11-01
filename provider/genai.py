@@ -69,7 +69,8 @@ def split_history_messages(messages):
 
 
 def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token=None, upstream_options=None,
-                      recover_empty=False, tools=None, tool_choice=None, parallel_tool_calls=True):
+                      recover_empty=False, tools=None, tool_choice=None, parallel_tool_calls=True,
+                      historical_call_ids=None):
     """逐代原子校验；空继续和未交付坏调用纠错共用一个心跳、取消和时限窗口。"""
     empty_budget = config.empty_continuations if recover_empty else 0
     repair_budget = config.tool_repair_attempts if tools else 0
@@ -102,7 +103,8 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
                                               and event.get("finish_reason") == "stop")
                         yield event
 
-            with closing(validated_events(raw_events(), tools, tool_choice, parallel_tool_calls)) as events:
+            with closing(validated_events(raw_events(), tools, tool_choice, parallel_tool_calls,
+                                          historical_call_ids)) as events:
                 for event in events:
                     if control.cancelled.is_set():
                         return
@@ -405,7 +407,7 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
 
 
 def collect_genai_response(chat_info, messages, model, max_tokens, config, upstream_options=None,
-                           tools=None, tool_choice=None, parallel_tool_calls=True):
+                           tools=None, tool_choice=None, parallel_tool_calls=True, historical_call_ids=None):
     """收集已校验输出，返回正文、思考、结束原因和完整调用。"""
     content_parts = []
     reasoning_parts = []
@@ -414,7 +416,7 @@ def collect_genai_response(chat_info, messages, model, max_tokens, config, upstr
     history = split_history_messages(messages)
     events = iter_genai_stream(chat_info, history, model, max_tokens, config, upstream_options=upstream_options,
                               recover_empty=bool(tools), tools=tools, tool_choice=tool_choice,
-                              parallel_tool_calls=parallel_tool_calls)
+                              parallel_tool_calls=parallel_tool_calls, historical_call_ids=historical_call_ids)
     for event in events:
         if event["type"] == "error":
             raise UpstreamError(event["message"], code=event.get("code", "upstream_error"))
@@ -435,7 +437,7 @@ def _chat_finish_reason(upstream_reason):
 
 
 def stream_genai_response(chat_info, messages, model, max_tokens, config, upstream_options=None,
-                          tools=None, tool_choice=None, parallel_tool_calls=True):
+                          tools=None, tool_choice=None, parallel_tool_calls=True, historical_call_ids=None):
     """Chat 流先发角色，安全正文实时交付，工具整批校验后交付。"""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(datetime.now().timestamp())
@@ -454,7 +456,8 @@ def stream_genai_response(chat_info, messages, model, max_tokens, config, upstre
     yield chunk({"role": "assistant", "content": ""})
     events = iter_genai_stream(chat_info, split_history_messages(messages), model, max_tokens, config,
                                upstream_options=upstream_options, recover_empty=bool(tools),
-                               tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls)
+                               tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls,
+                               historical_call_ids=historical_call_ids)
     try:
         for event in events:
             if event["type"] == "heartbeat":

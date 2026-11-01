@@ -1,10 +1,14 @@
 import json
+import threading
+from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
 from app import create_app
 from config import Config
-from provider import genai
+from provider import genai, streaming
+from tools.contracts import historical_tool_call_ids
 
 
 class DummyTokenManager:
@@ -311,14 +315,18 @@ def test_final_verification_examples_do_not_trigger_streamed_tools(monkeypatch, 
     assert actual == content
 
 
-def _patch_native_upstream(monkeypatch, arguments, *, name="write", finish="tool_calls", second=False):
+def _patch_native_upstream(monkeypatch, arguments, *, name="write", finish="tool_calls", second=False,
+                           call_id="call_preserved", release=None):
     class NativeResponse:
         status_code = 200
         text = ""
 
         def iter_lines(self, **kwargs):
+            if release is not None:
+                yield b'data: {"choices":[{"delta":{"content":"Progress before tools."},"finish_reason":null}]}'
+                assert release.wait(2), "正文必须先交付，不能等工具终态"
             fragments = [
-                {"index": 0, "id": "call_preserved", "type": "function",
+                {"index": 0, "id": call_id, "type": "function",
                  "function": {"name": name[:2], "arguments": arguments[:9]}},
                 {"index": 0, "function": {"name": name[2:], "arguments": arguments[9:]}},
             ]
@@ -545,3 +553,208 @@ def test_chat_history_without_current_tools_accepts_tool_result_turn(monkeypatch
     message = response.get_json()["choices"][0]["message"]
     assert message["content"] == "The earlier operation completed."
     assert not message.get("tool_calls")
+
+
+def _historical_turn(protocol, ids):
+    arguments = '{"path":"old.txt","content":"already executed"}'
+    if protocol == "chat":
+        messages = []
+        for call_id in ids:
+            messages.extend([
+                {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": call_id, "type": "function",
+                    "function": {"name": "write", "arguments": arguments},
+                }]},
+                {"role": "tool", "tool_call_id": call_id, "content": "success"},
+            ])
+        return {"messages": messages}
+    if protocol == "messages":
+        messages = []
+        for call_id in ids:
+            messages.extend([
+                {"role": "assistant", "content": [{
+                    "type": "tool_use", "id": call_id, "name": "write", "input": json.loads(arguments),
+                }]},
+                {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": call_id, "content": "success",
+                }]},
+            ])
+        return {"messages": messages}
+    items = []
+    for call_id in ids:
+        items.extend([
+            {"type": "function_call", "call_id": call_id, "name": "write", "arguments": arguments},
+            {"type": "function_call_output", "call_id": call_id, "output": "success"},
+        ])
+    return {"input": items}
+
+
+def _delivered_call(response, protocol, stream):
+    if not stream:
+        data = response.get_json()
+        if protocol == "chat":
+            call = data["choices"][0]["message"]["tool_calls"][0]
+            return call["id"], call["function"]["arguments"]
+        if protocol == "messages":
+            call = next(block for block in data["content"] if block["type"] == "tool_use")
+            return call["id"], json.dumps(call["input"], ensure_ascii=False)
+        call = next(item for item in data["output"] if item["type"] == "function_call")
+        return call["call_id"], call["arguments"]
+    events = _wire_events(response)
+    assert not any("error" in event or event.get("type") == "error" for event in events)
+    if protocol == "chat":
+        calls = [call for event in events for call in event["choices"][0]["delta"].get("tool_calls", [])]
+        return calls[0]["id"], "".join(call["function"].get("arguments", "") for call in calls)
+    if protocol == "messages":
+        call = next(event["content_block"] for event in events
+                    if event.get("content_block", {}).get("type") == "tool_use")
+        return call["id"], "".join(event.get("delta", {}).get("partial_json", "") for event in events)
+    call = next(event["item"] for event in events if event.get("type") == "response.output_item.done"
+                and event["item"]["type"] == "function_call")
+    return call["call_id"], call["arguments"]
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("wire", ["native", "text"])
+@pytest.mark.parametrize("historical_id", ["call_1", "call_2845a4e20c8d4ea889a2acd9"])
+def test_repeated_model_ids_are_fresh_across_tool_result_turns(monkeypatch, protocol, stream, wire, historical_id):
+    arguments = '{ "path": "雪.txt", "content": "keep <think>literal</think> exactly" }'
+    if wire == "native":
+        _patch_native_upstream(monkeypatch, arguments, call_id=historical_id)
+    else:
+        payload = {"calls": [{"id": historical_id, "operation": "write", "parameters": json.loads(arguments)}]}
+        _patch_upstream(monkeypatch, "@@ACTION@@" + json.dumps(payload) + "@@END_ACTION@@")
+    ids = [historical_id]
+    for _ in range(2):
+        history = _historical_turn(protocol, ids)
+        original = deepcopy(history)
+        response = _native_request(protocol, stream, **history)
+        assert response.status_code == 200
+        call_id, actual_arguments = _delivered_call(response, protocol, stream)
+        assert call_id not in ids
+        assert json.loads(actual_arguments) == json.loads(arguments)
+        if wire == "native" and protocol != "messages":
+            assert actual_arguments == arguments
+        assert history == original
+        ids.append(call_id)
+
+
+def test_historical_collision_reserves_entire_batch_and_keeps_streaming_input_immutable(monkeypatch):
+    arguments = '{ "path": "雪.txt", "content": "keep exactly" }'
+    calls = [{"id": call_id, "type": "function", "function": {"name": "write", "arguments": arguments}}
+             for call_id in ("call_1", "call_keep", "call_2")]
+    terminal = {"type": "done", "finish_reason": "tool_calls", "tool_calls": calls}
+    tools = [{"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}}]
+    history = {"call_1", "call_2"}
+    original = deepcopy((terminal, tools, history))
+    candidates = iter(["1", "keep", "new", "new", "next"])
+    monkeypatch.setattr(streaming, "uuid4", lambda: SimpleNamespace(hex=next(candidates)))
+    finished = []
+
+    def source():
+        yield {"type": "delta", "reasoning": "thinking", "content": "safe prose"}
+        finished.append(True)
+        yield terminal
+
+    events = streaming.validated_events(source(), tools, historical_call_ids=history)
+    assert next(events) == {"type": "delta", "reasoning": "thinking"}
+    assert not finished
+    assert next(events) == {"type": "delta", "content": "safe prose"}
+    assert not finished
+    result = next(events)
+    assert finished == [True]
+    assert result["type"] == "done"
+    assert [call["id"] for call in result["tool_calls"]] == ["call_new", "call_keep", "call_next"]
+    assert all(call["function"] == {"name": "write", "arguments": arguments} for call in result["tool_calls"])
+    assert (terminal, tools, history) == original
+    events.close()
+
+
+@pytest.mark.parametrize("wire", ["native", "text"])
+def test_duplicate_batch_ids_are_rejected_before_historical_collision_repair(monkeypatch, wire):
+    calls = [{"id": "call_1", "type": "function", "function": {"name": "write", "arguments": "{}"}}
+             for _ in range(2)]
+    tools = [{"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}}]
+    events = []
+    if wire == "text":
+        payload = {"calls": [{"id": "call_1", "operation": "write", "parameters": {}} for _ in range(2)]}
+        events.append({"type": "delta", "content": "@@ACTION@@" + json.dumps(payload) + "@@END_ACTION@@"})
+    events.append({"type": "done", "finish_reason": "stop", "tool_calls": calls if wire == "native" else []})
+    generated = []
+    monkeypatch.setattr(streaming, "uuid4", lambda: generated.append(True))
+    result = list(streaming.validated_events(iter(events), tools, historical_call_ids={"call_1"}))
+    assert len(result) == 1 and result[0]["type"] == "error"
+    assert result[0]["code"] == "tool_contract_error"
+    assert "unique" in result[0]["message"]
+    assert generated == []
+
+
+def test_history_ids_use_protocol_structure_not_prompt_or_argument_strings():
+    items = [
+        {"role": "assistant", "tool_calls": [{
+            "id": "chat", "function": {"arguments": '{"id":"not_history"}'},
+        }]},
+        {"role": "tool", "tool_call_id": "chat_result_only"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "anthropic"}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "anthropic_result_only"}]},
+        {"type": "function_call", "call_id": "function"},
+        {"type": "custom_tool_call", "call_id": "custom"},
+        {"type": "function_call_output", "call_id": "function_result_only"},
+        {"type": "custom_tool_call_output", "call_id": "custom_result_only"},
+        {"role": "user", "content": '@@ACTION@@{"calls":[{"id":"quoted"}]}@@END_ACTION@@'},
+        {"role": "assistant", "content": [{"type": "text", "text": '{"id":"text"}'}]},
+    ]
+    original = deepcopy(items)
+    assert historical_tool_call_ids(items) == {
+        "chat", "chat_result_only", "anthropic", "anthropic_result_only",
+        "function", "custom", "function_result_only", "custom_result_only",
+    }
+    assert items == original
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_responses_custom_history_collision_preserves_free_text_input(monkeypatch, stream):
+    text = '*** Begin Patch\n雪.txt\n<think>literal</think>\n*** End Patch'
+    _patch_native_upstream(monkeypatch, json.dumps({"input": text}), call_id="call_custom")
+    response = _native_request("responses", stream, tools=[{"type": "custom", "name": "write"}], input=[
+        {"type": "custom_tool_call", "call_id": "call_custom", "name": "write", "input": "old patch"},
+        {"type": "custom_tool_call_output", "call_id": "call_custom", "output": "success"},
+    ])
+    assert response.status_code == 200
+    if stream:
+        events = _wire_events(response)
+        call = next(event["item"] for event in events if event.get("type") == "response.output_item.done"
+                    and event["item"]["type"] == "custom_tool_call")
+    else:
+        call = next(item for item in response.get_json()["output"] if item["type"] == "custom_tool_call")
+    assert call["call_id"] != "call_custom"
+    assert call["input"] == text
+
+
+@pytest.mark.parametrize("protocol", ["chat", "messages", "responses"])
+def test_history_collision_does_not_delay_protocol_prose_until_tool_completion(monkeypatch, protocol):
+    release = threading.Event()
+    arguments = '{"path":"new.txt","content":"new work"}'
+    _patch_native_upstream(monkeypatch, arguments, call_id="call_1", release=release)
+    response = _native_request(protocol, True, **_historical_turn(protocol, ["call_1"]))
+    try:
+        assert response.status_code == 200
+        prefix = ""
+        for chunk in response.response:
+            prefix += chunk.decode() if isinstance(chunk, bytes) else chunk
+            if "Progress before tools." in prefix:
+                break
+        else:
+            pytest.fail("未在工具终态前收到正文")
+        assert not release.is_set()
+        assert '"type": "tool_use"' not in prefix
+        assert '"type":"function_call"' not in prefix
+        assert '"tool_calls"' not in prefix
+        release.set()
+        call_id, actual_arguments = _delivered_call(response, protocol, True)
+        assert call_id != "call_1"
+        assert json.loads(actual_arguments) == json.loads(arguments)
+    finally:
+        release.set()
+        response.close()

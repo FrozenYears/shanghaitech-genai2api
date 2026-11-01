@@ -14,7 +14,7 @@ from provider.responses import (
 from tools.prompts import inject_tool_prompt
 from provider.features import prepare_request
 from errors import UpstreamError
-from tools.contracts import validate_tool_request
+from tools.contracts import historical_tool_call_ids, validate_tool_request
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,7 @@ def responses():
 
         generator_args = dict(
             upstream_options=upstream_options,
+            historical_call_ids=historical_tool_call_ids(body.get("input")),
             instructions=body.get("instructions"),
             custom_tool_names=custom_tool_names,
             tools=chat_tools,

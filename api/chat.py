@@ -8,7 +8,7 @@ from flask import Blueprint, current_app, request, jsonify, stream_with_context,
 from errors import UpstreamError, openai_error
 from provider.features import prepare_request, is_web_search_tool
 from tools.prompts import inject_tool_prompt, normalize_tool_history
-from tools.contracts import validate_tool_request
+from tools.contracts import historical_tool_call_ids, validate_tool_request
 from provider.genai import (
     collect_genai_response,
     convert_messages_to_genai_format,
@@ -35,6 +35,7 @@ def chat_completions():
             return openai_error("Missing 'messages' field in request body")
 
         messages = req_data.get('messages', [])
+        historical_call_ids = historical_tool_call_ids(messages)
         model = req_data.get('model', 'gpt-3.5-turbo')
         stream = req_data.get('stream', False)
         max_tokens = req_data.get('max_tokens', 30000)
@@ -65,7 +66,7 @@ def chat_completions():
             gen = stream_genai_response(
                 chat_info, messages, model, max_tokens, config,
                 upstream_options=upstream_options, tools=tools, tool_choice=tool_choice,
-                parallel_tool_calls=parallel_tool_calls,
+                parallel_tool_calls=parallel_tool_calls, historical_call_ids=historical_call_ids,
             )
             return Response(
                 stream_with_context(gen),
@@ -83,7 +84,7 @@ def chat_completions():
                 complete_content, complete_reasoning, finish_reason, tool_calls = collect_genai_response(
                     chat_info, messages, model, max_tokens, config,
                     upstream_options=upstream_options, tools=tools, tool_choice=tool_choice,
-                    parallel_tool_calls=parallel_tool_calls,
+                    parallel_tool_calls=parallel_tool_calls, historical_call_ids=historical_call_ids,
                 )
             except UpstreamError as e:
                 logger.warning("[%s] upstream error: %s", request_id, e)

@@ -3,6 +3,7 @@ import queue
 import socket
 import threading
 import time
+from uuid import uuid4
 
 from errors import UpstreamError
 from tools.contracts import ToolContractError, validate_tool_calls
@@ -128,7 +129,7 @@ def heartbeat_events(factory, interval=10, timeout=None):
             worker.join(timeout=0.2)
 
 
-def validated_events(source, tools=None, tool_choice=None, parallel_tool_calls=True):
+def validated_events(source, tools=None, tool_choice=None, parallel_tool_calls=True, historical_call_ids=None):
     """先流式交付安全正文；工具批次在完整结束并校验后才可见。"""
     buffer = ""
     captured = False
@@ -194,6 +195,17 @@ def validated_events(source, tools=None, tool_choice=None, parallel_tool_calls=T
             if calls and event.get("finish_reason") == "length":
                 raise ToolContractError("Tool call output was truncated; no tool call was emitted")
             calls = validate_tool_calls(calls or [], tools or [], tool_choice, parallel_tool_calls)
+            if calls and historical_call_ids:
+                # 整批合法后才修复跨轮碰撞；先预留当批全部 ID，避免覆盖后面的合法调用。
+                historical_ids = set(historical_call_ids)
+                reserved_ids = historical_ids | {call["id"] for call in calls}
+                for call in calls:
+                    if call["id"] in historical_ids:
+                        call_id = "call_" + uuid4().hex[:24]
+                        while call_id in reserved_ids:
+                            call_id = "call_" + uuid4().hex[:24]
+                        call["id"] = call_id
+                        reserved_ids.add(call_id)
             if not calls and not visible_text and not (remaining or "").strip() and event.get("finish_reason") != "length":
                 raise UpstreamError("Upstream completed without an answer or tool call", code="upstream_empty_response")
             if remaining:

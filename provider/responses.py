@@ -272,6 +272,7 @@ def stream_genai_as_responses(
     upstream_options: Optional[Dict[str, Any]] = None,
     tool_choice=None,
     parallel_tool_calls=True,
+    historical_call_ids=None,
 ) -> Generator[str, None, None]:
     """把 GenAI 流转换成 OpenAI Responses API 的 SSE 事件。"""
     custom_tool_names = custom_tool_names or set()
@@ -509,7 +510,8 @@ def stream_genai_as_responses(
 
     events = iter_genai_stream(chat_info, history_messages, model, max_tokens, config,
                                upstream_options=upstream_options, recover_empty=bool(tools),
-                               tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls)
+                               tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls,
+                               historical_call_ids=historical_call_ids)
     try:
         for event in events:
             if event["type"] == "heartbeat":

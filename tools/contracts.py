@@ -118,6 +118,36 @@ def validate_tool_request(tools, tool_choice=None, parallel_tool_calls=True):
     return validators
 
 
+def historical_tool_call_ids(items):
+    """在协议结构转为提示词前收集历史调用及结果引用，不解析正文。"""
+    ids = set()
+    if not isinstance(items, (list, tuple)):
+        return ids
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        candidates = []
+        if item.get("role") == "assistant":
+            calls = item.get("tool_calls")
+            if isinstance(calls, list):
+                candidates.extend(call.get("id") for call in calls if isinstance(call, dict))
+        elif item.get("role") == "tool":
+            candidates.append(item.get("tool_call_id"))
+        if item.get("type") in ("function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"):
+            candidates.append(item.get("call_id"))
+        content = item.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if item.get("role") == "assistant" and block.get("type") == "tool_use":
+                    candidates.append(block.get("id"))
+                elif item.get("role") == "user" and block.get("type") == "tool_result":
+                    candidates.append(block.get("tool_use_id"))
+        ids.update(value for value in candidates if isinstance(value, str) and value)
+    return ids
+
+
 def validate_tool_calls(calls, tools, tool_choice=None, parallel_tool_calls=True):
     """验证整批后返回 Chat 调用，已有 ID 和合法参数字符串不做重写。"""
     validators = validate_tool_request(tools, tool_choice, parallel_tool_calls)

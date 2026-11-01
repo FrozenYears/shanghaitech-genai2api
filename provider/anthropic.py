@@ -321,7 +321,7 @@ def parse_tool_arguments(arguments: Any) -> Dict[str, Any]:
 
 def stream_genai_as_anthropic(
     messages: List[Dict[str, Any]], model: str, max_tokens: int, token: str, config: Any,
-    tools=None, tool_choice=None, parallel_tool_calls=True, upstream_options=None,
+    tools=None, tool_choice=None, parallel_tool_calls=True, upstream_options=None, historical_call_ids=None,
 ) -> Generator[str, None, None]:
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
     input_tokens = estimate_messages_tokens(messages)
@@ -354,7 +354,8 @@ def stream_genai_as_anthropic(
 
     events = iter_genai_stream(chat_info, history, model, max_tokens, config, token=token,
                                upstream_options=upstream_options, recover_empty=bool(tools),
-                               tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls)
+                               tools=tools, tool_choice=tool_choice, parallel_tool_calls=parallel_tool_calls,
+                               historical_call_ids=historical_call_ids)
     try:
         for event in events:
             if event["type"] == "heartbeat":

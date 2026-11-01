@@ -9,6 +9,7 @@ from provider.genai import estimate_messages_tokens
 from provider.features import prepare_request
 from errors import UpstreamError
 from tools.prompts import flatten_message_content
+from tools.contracts import historical_tool_call_ids
 from provider.anthropic import (
     COMPAT_THINKING_SIGNATURE,
     anthropic_tools_to_openai_tools,
@@ -50,6 +51,7 @@ def messages():
             return anthropic_error("Missing 'messages' field in request body", error_type="invalid_request_error", status=400)
 
         messages = req_data.get('messages', [])
+        historical_call_ids = historical_tool_call_ids(messages)
         model = req_data.get('model', 'GPT-5.5')
         stream = req_data.get('stream', True)
         max_tokens = req_data.get('max_tokens', 30000)
@@ -79,7 +81,7 @@ def messages():
                 config,
                 tools=tools, tool_choice=mapped_tool_choice,
                 parallel_tool_calls=parallel_tool_calls,
-                upstream_options=upstream_options,
+                upstream_options=upstream_options, historical_call_ids=historical_call_ids,
             )
             return Response(
                 stream_with_context(gen),
@@ -106,7 +108,7 @@ def messages():
                 config,
                 tools=tools, tool_choice=mapped_tool_choice,
                 parallel_tool_calls=parallel_tool_calls,
-                upstream_options=upstream_options,
+                upstream_options=upstream_options, historical_call_ids=historical_call_ids,
             ):
                 event = None
                 data = None

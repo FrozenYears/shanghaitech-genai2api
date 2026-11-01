@@ -9,6 +9,8 @@
 - [部署与接入](#部署与接入)
   - [快速开始](#快速开始)
   - [Windows 与启动参数](#windows-与启动参数)
+  - [上游模型](#上游模型)
+  - [接口](#接口)
   - [客户端配置](#客户端配置)
 - [功能与设计](#功能与设计)
   - [两跳分工](#两跳分工)
@@ -125,6 +127,40 @@ curl -fsS http://127.0.0.1:31110/v1/models \
 ```
 
 健康检查仅说明服务存活。请求须使用模型列表中的真实 `id`（如 `deepseek-pro`、`Kimi-k3`），代理不做别名映射。
+
+### 上游模型
+
+请求的 `model` 填左列 ID，可用 ID 以 `/v1/models` 返回为准。
+
+| Model ID | 实际模型 |
+| --- | --- |
+| `GPT-6.1-Sol` | GPT-6.1-Sol |
+| `GPT-6.1-Terra` | GPT-6.1-Terra |
+| `gpt-6-astra` | GPT-6-Astra |
+| `GPT-6-Luna` | GPT-6-Luna |
+| `GPT-Image-2` | GPT-Image-2.5-Sunburst |
+| `chatglm` | GLM-5.3-Flash |
+| `qwen-instruct` | Qwen-3.8 |
+| `deepseek-pro` | DeepSeek-V4.1-Flash |
+| `Kimi-k3` | Kimi-K3 |
+
+### 接口
+
+双跳部署时使用 relay 地址 `http://127.0.0.1:31110`，下表列出完整请求路径。
+
+| 接口 | 路径 |
+| --- | --- |
+| OpenAI Chat Completions | `POST /v1/chat/completions` |
+| OpenAI Responses | `POST /v1/responses` |
+| Responses token 计数 | `POST /v1/responses/input_tokens` |
+| Anthropic Messages | `POST /v1/messages` |
+| Anthropic token 计数 | `POST /v1/messages/count_tokens` |
+| 模型目录 | `GET /v1/models` |
+| 健康检查 | `GET /health` |
+
+token 计数为本地估算。直连第一跳（`http://127.0.0.1:31100`）不提供 Responses token 计数接口。
+
+Responses token 计数的 `input` 目前须用消息数组；字符串输入会返回 500。
 
 ### 客户端配置
 

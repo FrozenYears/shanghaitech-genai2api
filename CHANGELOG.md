@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 上游模型与接口
+
+- 两仓库 README 新增上游模型 ID 对照表，以及客户端接口的请求方法和完整路径。
+- 标注 token 计数为本地估算，说明第一跳与 relay 的 Responses 计数接口差异及字符串输入的现有问题。
+- DeepSeek 模型名称更正为上游返回的 `DeepSeek-V4.1-Flash`，移除未经接口确认的版本后缀。
+
 ### 当前版本模型实测说明
 
 - 两仓库 README 主表改为 10-27 的 Kimi/omp 长测结果，注明测试代码与当前 main 的运行代码一致、DeepSeek 当前版本未重新长测。

@@ -50,6 +50,5 @@ pixi run python -B validation/native-first-endurance/run.py run --model Kimi-k3 
 
 本轮实时目录核对确认 `Kimi-k3` 的展示名为 `Kimi K3.1 Pro`，不是 model ID 变更；`deepseek-pro` 仍为 `DeepSeek-V4.1-Flash`，两者解析的 `rootAiType` 均为 `xinference`。间隔约18分钟后，DeepSeek 最小探针返回 HTTP 200/`READY`，Kimi 仍返回 HTTP 502，错误为 `no_available_workers`，上游明确指向 `kimi-api` worker 池及熔断/不健康状态。公开目录没有提供 worker 诊断，因此不能把它归因于客户端 ID 或代理路由。
 
-为候选服务增加了显式隔离端点和 `PI_CODING_AGENT_DIR`，并准备了可选的扩展 21–30 阶段任务：精度/币种换算、CSV 原子导入、最大余数分配、批事务与 compare-and-swap、快照恢复、逐项技术/审查发布门禁、按币种结算及交付清单摘要。Bootstrap 已分别确认 Kimi 与 DeepSeek 使用隔离 relay、目标模型和限定工具；Kimi 随后单次扩展长测运行 320.328 秒、0 阶段/0 工具，因 `kimi-api/no_available_workers` 结束；不是成功长测。DeepSeek 扩展长测已单独启动，结果未与 Kimi 混算，完成状态以本轮运行目录为准。
-
+为候选服务增加了显式隔离端点和 `PI_CODING_AGENT_DIR`，并准备了可选的扩展 21–30 阶段任务：精度/币种换算、CSV 原子导入、最大余数分配、批事务与 compare-and-swap、快照恢复、逐项技术/审查发布门禁、按币种结算及交付清单摘要。Bootstrap 已分别确认 Kimi 与 DeepSeek 使用隔离 relay、目标模型和限定工具；Kimi 随后单次扩展长测运行 320.328 秒、0 阶段/0 工具，因 `kimi-api/no_available_workers` 结束；不是成功长测。DeepSeek 单次扩展长测运行 1160.91 秒，进入24阶段、通过23阶段，执行191次工具调用、133次模型请求、43次阶段尝试；第24阶段在8次自动反馈后因`unknown_operation`及上游认证/服务错误停止，25–30未执行，也不是完整成功长测。
 本轮不以 DeepSeek 代替 Kimi K3.1 Pro，也不通过增加重试掩盖平台不可用；`no_available_workers` 需要学校平台恢复健康 worker 后再复测。

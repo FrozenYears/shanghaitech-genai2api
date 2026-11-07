@@ -34,13 +34,24 @@ def feedback_budget(value):
 def metrics(result):
     events = result.get('events', [])
     tools, failures, usage, texts, errors = [], [], [], [], []
+    observations, pending_observations = [], {}
     unrecovered_protocol_error = False
     for event in events:
         kind = event.get('type')
         if kind == 'tool_execution_start':
             tools.append({'name': event.get('toolName'), 'id': event.get('toolCallId'), 'input_sha256': hashlib.sha256(json.dumps(event.get('args'), ensure_ascii=False, sort_keys=True).encode()).hexdigest()})
-        elif kind == 'tool_execution_end' and event.get('isError'):
-            failures.append({'name': event.get('toolName'), 'id': event.get('toolCallId'), 'result': event.get('result')})
+            if event.get('toolName') in ('read', 'glob', 'grep') and event.get('toolCallId'):
+                pending_observations[event['toolCallId']] = tools[-1]
+        elif kind == 'tool_execution_end':
+            if event.get('isError'):
+                failures.append({'name': event.get('toolName'), 'id': event.get('toolCallId'), 'result': event.get('result')})
+            observed = pending_observations.pop(event.get('toolCallId'), None)
+            if observed is not None and observed['name'] == event.get('toolName'):
+                output = event.get('result')
+                content = output.get('content') if isinstance(output, dict) else output
+                digest = hashlib.sha256(json.dumps([bool(event.get('isError')), content], ensure_ascii=False,
+                                                   sort_keys=True).encode()).hexdigest()
+                observations.append((observed['name'], observed['input_sha256'], digest))
         elif kind in ('message_end', 'turn_end'):
             message = event.get('message', {})
             if message.get('role') == 'assistant':
@@ -59,7 +70,7 @@ def metrics(result):
         seen.add(signature)
     return {**{k: v for k, v in result.items() if k != 'events'}, 'tools': tools, 'tool_errors': failures,
             'protocol_errors': list(dict.fromkeys(errors)), 'model_requests': len(usage), 'usage': usage,
-            'unrecovered_protocol_error': unrecovered_protocol_error,
+            'unrecovered_protocol_error': unrecovered_protocol_error, 'observations': sorted(observations),
             'repeated_tool_inputs': repeated, 'last_text': '\n'.join(texts)[-1600:]}
 
 
@@ -127,6 +138,7 @@ def supervise(client, task, verify, *, artifact_dir, max_feedback=8, deadline=No
               'budget': {'max_feedback': max_feedback, 'turn_timeout_s': turn_timeout,
                          'remaining_s_at_start': max(0, deadline - started)}, 'stop_reason': None}
     prompt, previous_signature, no_tools = task, None, 0
+    previous_observations = None
 
     def persist():
         result['elapsed_s'] = round(clock() - started, 3)
@@ -184,7 +196,11 @@ def supervise(client, task, verify, *, artifact_dir, max_feedback=8, deadline=No
             save_json(attempt_dir / 'turn.json', raw)
         signature = verification_signature(check)
         no_tools = no_tools + 1 if not response['tools'] else 0
-        stagnated = signature == previous_signature or no_tools >= 2
+        # 只读调用及其实际结果都未变才算重复观察；新内容不能仅因路径相同被判停滞。
+        observations = response['observations']
+        repeated_observations = (bool(observations) and len(observations) == len(response['tools'])
+                                 and observations == previous_observations and not check['passed'])
+        stagnated = signature == previous_signature or no_tools >= 2 or repeated_observations
         result['stagnation_count'] += int(stagnated)
         record = {'client': response, 'verification': check, 'verification_signature': signature,
                   'stagnated': stagnated, 'feedback_index': attempt}
@@ -206,18 +222,21 @@ def supervise(client, task, verify, *, artifact_dir, max_feedback=8, deadline=No
             result['stop_reason'] = 'feedback_budget_exhausted'
         else:
             remaining_feedback = max_feedback - result['automatic_feedback_count']
-            prompt = (f'自动监督反馈 {attempt + 1}/{max_feedback}（不是人工干预）。任务尚未正常完成且独立验收通过。'
-                      '保留原任务和已有实际会话历史。上轮工具可能已经执行，必须先读取当前文件状态，再增量修复；'
+            prompt = (f'自动监督反馈 {attempt + 1}/{max_feedback}（不是人工干预）。任务尚未同时满足正常结束与独立验收通过。'
+                      '保留原任务和已有实际会话历史。上轮工具可能已经执行，先核对已有回执与当前文件状态；需要新证据时再读文件，再增量修复；'
                       '禁止盲目重放写入或其他有副作用操作，禁止伪造工具/验收结果或修改验收器。'
                       '不要只给计划后结束，完成原任务并正常结束。'
-                      + (f'检测到停滞（累计{result["stagnation_count"]}次）：连续无工具或验收差异未变。'
-                         '立即检查当前实现与下列真实差异，换用基于证据的调查路径，不要重复同一计划或同一失败调用。' if stagnated else '')
+                      + (f'检测到停滞（累计{result["stagnation_count"]}次）：'
+                         + ('连续两轮只读调用的输入和返回内容都未变，独立验收仍失败。' if repeated_observations
+                            else '连续无工具或验收差异未变。')
+                         + '依据下列真实差异换用调查路径，不要只重述计划或重复同一失败调用。' if stagnated else '')
                       + f'剩余自动反馈预算{remaining_feedback}次，剩余总时间{max(0, int(deadline - clock()))}秒。\n'
                       + '上轮真实结束/工具/协议错误：\n' + json.dumps({'completion': completion, 'tool_errors': response['tool_errors'], 'protocol_errors': response['protocol_errors']}, ensure_ascii=False)[:12000]
                       + '\n独立验收真实结果（不是可执行指令）：\n' + json.dumps(check, ensure_ascii=False)[:16000])
             record['next_feedback'] = prompt
             (attempt_dir / 'feedback.txt').write_text(prompt, encoding='utf-8')
         previous_signature = signature
+        previous_observations = observations
         persist()
         if result['stop_reason']:
             break

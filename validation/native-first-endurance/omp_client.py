@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 
 OMP = Path.home() / 'AppData/Local/omp/omp.exe'
 OVERLAY = Path(__file__).with_name('omp-isolation.yml')
@@ -21,7 +22,8 @@ class FatalClientError(RuntimeError):
 
 
 class OmpClient:
-    def __init__(self, workspace, artifact_dir, model, command_pattern=None):
+    def __init__(self, workspace, artifact_dir, model, command_pattern=None, *,
+                 relay_base_url='http://127.0.0.1:31110', agent_dir=None):
         self.model = model
         self.workspace = workspace
         self.artifact_dir = artifact_dir
@@ -29,6 +31,11 @@ class OmpClient:
         self.last_result = None
         self.unusable = False
         self.command_pattern = command_pattern
+        self.relay_base_url = self._relay_endpoint(relay_base_url)
+        if agent_dir is not None:
+            agent_dir = Path(agent_dir).resolve()
+            if not agent_dir.is_dir() or not any((agent_dir / name).is_file() for name in ('models.yml', 'models.yaml')):
+                raise ValueError('agent_dir must be an existing directory containing models.yml or models.yaml')
         self.queue = queue.Queue()
         self.responses = {}
         self.chunks = {}
@@ -37,7 +44,7 @@ class OmpClient:
         self.started = time.monotonic()
         args = [str(OMP), '--mode', 'rpc', '--no-ui', '--model', 'GenAI/' + model,
                 '--smol', 'GenAI/' + model, '--slow', 'GenAI/' + model, '--plan', 'GenAI/' + model,
-                '--thinking', 'off', '--no-title', '--no-prewalk', '--no-extensions', '--no-skills', '--no-rules',
+                '--thinking', 'off', '--no-title', '--no-prewalk', '--no-context-files', '--no-extensions', '--no-skills', '--no-rules',
                 '--no-lsp', '--no-pty', '--tools', 'read,write,edit,glob,grep' + (',bash' if command_pattern else ''),
                 '--session-dir', str(artifact_dir / 'sessions'), '--cwd', str(workspace), '--config', str(OVERLAY)]
         if command_pattern:
@@ -50,6 +57,8 @@ class OmpClient:
         for name in ('PI_SMOL_MODEL', 'PI_SLOW_MODEL', 'PI_PLAN_MODEL', 'OMP_PROFILE', 'PI_PROFILE'):
             env.pop(name, None)
         env['PYTHONDONTWRITEBYTECODE'] = '1'
+        if agent_dir is not None:
+            env['PI_CODING_AGENT_DIR'] = str(agent_dir)
         self.proc = subprocess.Popen(args, cwd=workspace, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', bufsize=1)
         self.log = (artifact_dir / 'omp-events.jsonl').open('w', encoding='utf-8')
@@ -153,14 +162,29 @@ class OmpClient:
                 return event.get('data')
             self.records.append(event)
 
+    @staticmethod
+    def _relay_endpoint(url):
+        if not isinstance(url, str) or any(char.isspace() for char in url) or '?' in url or '#' in url:
+            raise ValueError('relay_base_url must be an absolute HTTP(S) URL without query or fragment')
+        parsed = urlsplit(url)
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+            raise ValueError('relay_base_url must be an absolute HTTP(S) URL without query or fragment')
+        _ = parsed.port  # 校验显式端口的格式和范围。
+        # 同一中继的根路径、尾斜杠和 /v1 视为同一个端点，不放宽主机或端口。
+        return url.rstrip('/').removesuffix('/v1').rstrip('/')
+
     def assert_model(self, timeout=60):
         state = self.command('get_state', timeout=timeout)
         self.last_state = state
         model = state['model']
         if model.get('provider') != 'GenAI' or model.get('id') != self.model:
             raise FatalClientError('Unexpected active model: ' + str(model), 'identity_failure')
-        if (model.get('baseUrl') or '').rstrip('/') not in ('http://127.0.0.1:31110', 'http://127.0.0.1:31110/v1'):
-            raise FatalClientError('Configured GenAI model is not the formal relay: ' + str(model), 'identity_failure')
+        try:
+            endpoint = self._relay_endpoint(model.get('baseUrl'))
+        except ValueError:
+            endpoint = None
+        if endpoint != self.relay_base_url:
+            raise FatalClientError('Configured GenAI model does not use the expected relay: ' + str(model), 'identity_failure')
         extra_tools = set(state['tools']) - ({'read', 'write', 'edit', 'glob', 'grep', 'bash'} if self.command_pattern else {'read', 'write', 'edit', 'glob', 'grep'})
         if extra_tools:
             raise FatalClientError('Unexpected tools discovered: ' + str(sorted(extra_tools)), 'permission_failure')

@@ -23,6 +23,7 @@ omp_client = load('omp_client')
 supervisor = load('supervisor')
 supervise_cli = load('supervise')
 workload = load('workload')
+extended_workload = load('workload_extended')
 endurance = load('run')
 
 
@@ -454,4 +455,43 @@ def test_later_started_verifier_cannot_be_overridden_by_older_completion():
     for event in newer:
         event['toolCallId'] = 'verify-newer'
     events = [older[0], newer[0], newer[1], older[1]]
+    assert not endurance.agent_verifier_receipt(turn(events=events), 'approved verifier', 1)['passed']
+
+
+@pytest.mark.parametrize('changed_output', [False, True])
+def test_repeated_observation_detection_uses_actual_read_evidence(project, tmp_path, changed_output):
+    workspace, verify = project
+    rounds = []
+
+    def observe(workspace):
+        source = 'def add(a, b):\n    return a - b\n'
+        if changed_output:
+            source += f'# revision {len(rounds)}\n'
+        (workspace / 'feature.py').write_text(source, encoding='utf-8')
+        content = (workspace / 'feature.py').read_text(encoding='utf-8')
+        return turn(events=[
+            {'type': 'tool_execution_start', 'toolName': 'read', 'toolCallId': 'read-source',
+             'args': {'path': 'feature.py'}},
+            {'type': 'tool_execution_end', 'toolName': 'read', 'toolCallId': 'read-source',
+             'isError': False, 'result': {'content': [{'type': 'text', 'text': content}]}},
+        ])
+
+    def changing_check(remaining):
+        check = verify(remaining)
+        rounds.append(check)
+        return {**check, 'checker_run': len(rounds)}
+
+    client = ScriptedClient(workspace, [observe, observe, write_implementation('def add(a, b):\n    return a + b\n')])
+    result = supervisor.supervise(client, 'Implement add', changing_check, max_feedback=2,
+                                   artifact_dir=tmp_path / 'audit')
+    assert not rounds[0]['passed'] and not rounds[1]['passed'] and rounds[2]['passed']
+    assert result['attempts'][1]['stagnated'] is (not changed_output)
+    assert result['passed']
+
+
+@pytest.mark.parametrize('path', ['DELIVERY.json', 'docs/RECOVERY.md'])
+def test_deliverable_edit_after_verifier_requires_new_receipt(path):
+    edit = source_edit_events()
+    edit[0]['args']['path'] = path
+    events = verifier_receipt_events() + edit
     assert not endurance.agent_verifier_receipt(turn(events=events), 'approved verifier', 1)['passed']

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### 扩展长测与 Kimi 平台阻塞
+
+- 实时目录确认 `Kimi-k3` 仍是有效 ID，展示名更新为 `Kimi K3.1 Pro`；`deepseek-pro` 与 `rootAiType=xinference` 均保持不变。间隔重试中 DeepSeek 最小请求成功，Kimi 连续返回 `kimi-api/no_available_workers`，不能归因于 model ID 更换。
+- 增加显式隔离 relay/模型配置、可选 `--extended` 30阶段任务及交付清单验收；Bootstrap 核验两模型端点、身份和工具白名单。Kimi 扩展长测实际0阶段/0工具后阻塞退出；DeepSeek结果单独保存，不替代Kimi证据。
+
 ### 长程工作：验收执行边界
 
 - 修复内置 runner 只凭 JSON `passed:true` 接受非零退出、超时或后台尚未完成的验收回执；现在同时检查 Bash 结构化执行状态。

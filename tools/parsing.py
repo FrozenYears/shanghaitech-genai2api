@@ -13,8 +13,8 @@ class ToolCallParseError(ToolContractError):
 
     code = "tool_call_parse_error"
 
-    def __init__(self, message):
-        super().__init__(message, feedback="显式工具协议无法解析：检查 JSON、调用成员及协议标记是否完整闭合，重新输出完整批次。")
+    def __init__(self, message, *, feedback=None):
+        super().__init__(message, feedback=feedback or "显式工具协议无法解析：检查 JSON、调用成员及协议标记是否完整闭合，重新输出完整批次。")
 
 
 DSML_OPEN_PREFIX_FULLWIDTH = "<｜DSML｜"
@@ -105,7 +105,9 @@ def _action(text, allowed_names):
     except (ValueError, RecursionError) as exc:
         raise ToolCallParseError("Action envelope contains invalid or incomplete JSON") from exc
     if body[end:].strip() != ACTION_CLOSE_MARKER:
-        raise ToolCallParseError("Expected one complete final action envelope")
+        raise ToolCallParseError("Expected one complete final action envelope", feedback=(
+            "只输出一个完整的最终 @@ACTION@@ JSON @@END_ACTION@@ 封套；结束标记后只能有空白，不能再追加正文或第二个封套。"
+        ))
     if not isinstance(payload, dict) or set(payload) != {"calls"}:
         raise ToolCallParseError("Action envelope must contain only calls")
     if not isinstance(payload["calls"], list) or not payload["calls"]:
@@ -113,7 +115,10 @@ def _action(text, allowed_names):
     calls = []
     for call in payload["calls"]:
         if not isinstance(call, dict) or not {"operation", "parameters"} <= set(call) or set(call) - {"operation", "parameters", "id"}:
-            raise ToolCallParseError("Action calls require operation and parameters")
+            raise ToolCallParseError("Action calls require operation, parameters and optionally id only", feedback=(
+                "每个 calls 成员必须是对象，只含 operation、parameters 和可选的唯一字符串 id。"
+                "工具参数只放在 parameters 内并遵循本轮 Schema；不要添加 name、arguments、function 或其它封套字段。重新生成完整批次。"
+            ))
         calls.append(_call(call["operation"], call["parameters"], allowed_names, call.get("id")))
     return calls
 

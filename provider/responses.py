@@ -7,7 +7,7 @@ from provider.anthropic import parse_tool_arguments
 from provider.genai import estimate_text_tokens, iter_genai_stream
 from provider.features import is_web_search_tool
 from tools.parsing import ACTION_CLOSE_MARKER, ACTION_OPEN_MARKER
-from tools.prompts import escape_tool_control_markers, flatten_message_content, normalize_content, merge_content
+from tools.prompts import escape_tool_control_markers, flatten_message_content, normalize_content, merge_content, normalize_tool_history
 
 
 def _qualified_name(name, namespace=None):
@@ -178,20 +178,12 @@ def responses_input_to_genai_messages(input_value: Any, instructions: Any = None
                 "content": f"{ACTION_OPEN_MARKER}{call_json}{ACTION_CLOSE_MARKER}",
             })
         elif item_type in ("function_call_output", "custom_tool_call_output"):
-            output_parts = normalize_content(item.get("output"))
-            output = flatten_message_content(output_parts)
-            attachments = [part for part in output_parts if part["type"] != "text"] if isinstance(output_parts, list) else []
-            call_id = item["call_id"]
-            text = (
-                "<tool_result>\n"
-                f"  <tool_call_id>{call_id}</tool_call_id>\n"
-                f"  <result>\n{output}\n  </result>\n"
-                "</tool_result>"
-            )
-            messages.append({
-                "role": "user",
-                "content": merge_content(text, attachments) if attachments else text,
-            })
+            messages.extend(normalize_tool_history([{
+                "role": "tool",
+                "tool_call_id": item["call_id"],
+                "content": normalize_content(item.get("output")),
+                "is_error": bool(item.get("is_error", False)),
+            }]))
         elif item_type == "reasoning":
             continue
         else:

@@ -81,7 +81,6 @@ def test_responses_input_conversion_with_tools_and_reasoning_history():
     assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
     assert "@@ACTION@@" in messages[2]["content"]
     assert '"operation": "shell"' in messages[2]["content"]
-    assert "<tool_call_id>call_1</tool_call_id>" in messages[3]["content"]
     assert "file.txt" in messages[3]["content"]
     assert "继续" in messages[3]["content"]
     # 历史 reasoning 不该重新喂给上游

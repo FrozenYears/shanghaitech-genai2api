@@ -12,6 +12,7 @@ import time
 from omp_client import OmpClient
 from supervisor import feedback_budget, metrics, positive, run_checker, supervise
 from workload import BASE, STAGES, STARTER, cases
+from workload_extended import STAGES as EXTENDED_STAGES, cases as extended_cases, delivery_failures
 
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON = ROOT / '.pixi/envs/default/python.exe'
@@ -38,7 +39,8 @@ def agent_verifier_receipt(result, command, stage):
             call_id, name, arguments = event.get('toolCallId'), event.get('toolName'), event.get('args') or {}
             starts[call_id] = (index, arguments, name)
             path = arguments.get('path')
-            if name in ('write', 'edit') and isinstance(path, str) and path.lower().endswith('.py'):
+            if name in ('write', 'edit') and isinstance(path, str) and (
+                    path.lower().endswith('.py') or path.lower().endswith(('.json', '.md'))):
                 pending_mutations.add(call_id)
                 last_mutation = index
             if name == 'bash' and (arguments.get('command') or '').strip() == command.strip():
@@ -75,12 +77,13 @@ def agent_verifier_receipt(result, command, stage):
             'successful_receipts': successes}
 
 
-def verify(workspace, stage, output=None, deadline=None):
+def verify(workspace, stage, output=None, deadline=None, *, extended=False):
     """逐请求运行实际业务代码；期望只由验收进程持有。"""
     failures = []
     assertions = 0
     sandbox = Path(tempfile.mkdtemp(prefix='db-', dir=workspace.parent))
-    for group in cases(stage):
+    groups = cases(stage) + (extended_cases(stage) if extended else [])
+    for group in groups:
         db = sandbox / (group['name'].replace('/', '_') + '.sqlite')
         for step, (request, expected) in enumerate(group['steps']):
             if deadline is not None and time.monotonic() >= deadline:
@@ -129,6 +132,9 @@ def verify(workspace, stage, output=None, deadline=None):
     fixture = workspace / 'fixed_fixture.txt'
     if not fixture.exists() or digest(fixture) != hashlib.sha256(FIXTURE.encode()).hexdigest():
         failures.append({'case': 'fixture_integrity', 'error': 'Protected fixture missing or changed'})
+    if extended and stage >= 30:
+        assertions += 1
+        failures.extend(delivery_failures(workspace, hashlib.sha256(FIXTURE.encode()).hexdigest()))
     result = {'stage': stage, 'passed': not failures, 'assertions': assertions, 'failures': failures[:12], 'failure_count': len(failures)}
     if output:
         output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -149,7 +155,7 @@ def artifacts(model):
 def pilot(args):
     run_dir, workspace = artifacts(args.model)
     emit({'pilot': args.model, 'artifact_dir': str(run_dir)})
-    client = OmpClient(workspace, run_dir, args.model)
+    client = OmpClient(workspace, run_dir, args.model, relay_base_url=args.relay_base_url, agent_dir=args.agent_dir)
     try:
         state = client.assert_model()
         emit({'actual_model': state['model'], 'available_tools': state['tools']})
@@ -172,15 +178,19 @@ def run(args):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding='utf-8')
     (workspace / 'fixed_fixture.txt').write_bytes(FIXTURE.encode())
-    command_prefix = f'"{PYTHON.as_posix()}" -B "{Path(__file__).as_posix()}" verify --workspace "{workspace.as_posix()}" --stage '
-    summary = {'model': args.model, 'client': 'omp', 'relay': 'http://127.0.0.1:31110', 'workspace': str(workspace), 'started_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'stages': [], 'completed': False}
+    extended_flag = ' --extended' if args.extended else ''
+    command_prefix = f'"{PYTHON.as_posix()}" -B "{Path(__file__).as_posix()}" verify{extended_flag} --workspace "{workspace.as_posix()}" --stage '
+    planned_stages = STAGES + (EXTENDED_STAGES if args.extended else [])
+    summary = {'model': args.model, 'client': 'omp', 'relay': args.relay_base_url, 'extended_workload': args.extended,
+               'planned_stages': args.stages, 'workspace': str(workspace), 'started_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'stages': [], 'completed': False}
     started = time.monotonic()
     client = None
     emit({'started': args.model, 'client': 'omp', 'artifact_dir': str(run_dir)})
     try:
-        client = OmpClient(workspace, run_dir, args.model, command_pattern=command_prefix + '*')
+        client = OmpClient(workspace, run_dir, args.model, command_pattern=command_prefix + '*',
+                           relay_base_url=args.relay_base_url, agent_dir=args.agent_dir)
         summary['identity'] = client.assert_model()
-        for index, (name, task) in enumerate(STAGES[:args.stages], 1):
+        for index, (name, task) in enumerate(planned_stages[:args.stages], 1):
             remaining = args.max_minutes * 60 - (time.monotonic() - started)
             if remaining <= 0:
                 summary['stop_reason'] = 'wall_time_limit'
@@ -205,7 +215,7 @@ def run(args):
                           'automatic_feedback_count': state['automatic_feedback_count'],
                           'stagnation_count': state['stagnation_count'], 'stop_reason': state['stop_reason']})
             def check_stage(seconds):
-                check = verify(workspace, index, deadline=time.monotonic() + seconds)
+                check = verify(workspace, index, deadline=time.monotonic() + seconds, extended=args.extended)
                 receipt = agent_verifier_receipt(client.last_result, command, index)
                 check.update(business_passed=check['passed'], business_assertions=check['assertions'],
                              agent_verifier=receipt, assertions=check['assertions'] + 1)
@@ -262,20 +272,27 @@ def main():
     for name in ('run', 'pilot'):
         execute = sub.add_parser(name)
         execute.add_argument('--model', choices=['deepseek-pro', 'Kimi-k3'], required=True)
-        execute.add_argument('--stages', type=int, default=len(STAGES))
+        execute.add_argument('--stages', type=int)
+        execute.add_argument('--extended', action='store_true', help='启用额外10个复杂阶段；不改变默认20阶段')
+        execute.add_argument('--relay-base-url', default='http://127.0.0.1:31110')
+        execute.add_argument('--agent-dir', type=Path, help='隔离的omp模型配置目录，不写用户全局配置')
         execute.add_argument('--max-minutes', type=positive, default=45)
         execute.add_argument('--stage-timeout', type=positive, default=1200)
         execute.add_argument('--max-feedback', type=feedback_budget, default=8)
     check = sub.add_parser('verify')
     check.add_argument('--workspace', type=Path, required=True)
     check.add_argument('--stage', type=int, required=True)
+    check.add_argument('--extended', action='store_true')
     args = parser.parse_args()
-    if args.mode != 'verify' and not 1 <= args.stages <= len(STAGES):
-        parser.error('--stages 超出可用阶段范围')
-    if args.mode == 'verify' and not 1 <= args.stage <= len(STAGES):
+    available = len(STAGES) + (len(EXTENDED_STAGES) if args.extended else 0)
+    if args.mode != 'verify':
+        args.stages = available if args.stages is None else args.stages
+        if not 1 <= args.stages <= available:
+            parser.error('--stages 超出可用阶段范围')
+    if args.mode == 'verify' and not 1 <= args.stage <= available:
         parser.error('--stage 超出可用阶段范围')
     if args.mode == 'verify':
-        result = verify(args.workspace.resolve(), args.stage)
+        result = verify(args.workspace.resolve(), args.stage, extended=args.extended)
         emit(result)
         return 0 if result['passed'] else 1
     return pilot(args) if args.mode == 'pilot' else run(args)

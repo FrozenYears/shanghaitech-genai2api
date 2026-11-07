@@ -417,3 +417,41 @@ def test_only_the_required_stage_and_successful_execution_can_verify(command, st
 def test_a_later_failed_verifier_invalidates_an_earlier_success():
     events = verifier_receipt_events() + verifier_receipt_events(passed=False, is_error=True)
     assert not endurance.agent_verifier_receipt(turn(events=events), 'approved verifier', 1)['passed']
+
+
+@pytest.mark.parametrize('details', [
+    {'exitCode': 1},
+    {'timedOut': True},
+    {'async': {'state': 'running', 'jobId': 'bg-check', 'type': 'bash'}},
+    {'async': {'state': 'failed', 'jobId': 'bg-check', 'type': 'bash'}},
+    {'async': {'state': 'cancelled', 'jobId': 'bg-check', 'type': 'bash'}},
+])
+def test_verifier_json_cannot_override_failed_or_pending_execution(details):
+    events = verifier_receipt_events()
+    events[-1]['result']['details'] = details
+    receipt = endurance.agent_verifier_receipt(turn(events=events), 'approved verifier', 1)
+    assert not receipt['passed']
+    assert receipt['successful_receipts'] == 0
+
+
+@pytest.mark.parametrize('placement', ['before_check', 'after_check', 'failed_after_check'])
+def test_unfinished_or_later_source_mutation_invalidates_verification(placement):
+    edit = source_edit_events()
+    receipt = verifier_receipt_events()
+    if placement == 'before_check':
+        events = edit[:1] + receipt
+    elif placement == 'after_check':
+        events = receipt + edit[:1]
+    else:
+        edit[-1]['isError'] = True
+        events = receipt + edit
+    assert not endurance.agent_verifier_receipt(turn(events=events), 'approved verifier', 1)['passed']
+
+
+def test_later_started_verifier_cannot_be_overridden_by_older_completion():
+    older = verifier_receipt_events(passed=True)
+    newer = verifier_receipt_events(passed=False)
+    for event in newer:
+        event['toolCallId'] = 'verify-newer'
+    events = [older[0], newer[0], newer[1], older[1]]
+    assert not endurance.agent_verifier_receipt(turn(events=events), 'approved verifier', 1)['passed']

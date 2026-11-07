@@ -44,3 +44,5 @@ pixi run python -B validation/native-first-endurance/run.py run --model Kimi-k3 
 
 该runner既独立运行累计业务检查，也核对模型实际调用指定验收命令的工具回执。最后一次源码修改后须重新成功验收；仅说“接下来运行”或事后由控制器检查通过，不算模型完成全部工作流。单独`verify`子命令仍只检查业务，避免递归要求自己的工具回执。`--max-feedback 0`失败即停，不自动发送“继续”；旧报告中的业务通过数不等于满足本轮新增的完整执行条件。
 
+验收回执还须满足执行与时序条件：Bash 结果的非零 `details.exitCode`、`timedOut` 或未成功结束的 `details.async.state` 均不能被正文中的 `passed:true` 覆盖。只采用最后启动的指定验收，旧验收晚到不会覆盖新失败；源码写入/编辑尝试（包括失败尝试）结束后须重新验收，有未结束的源码修改时不能通过。这些规则只约束此 runner 的工作流证据，不是对任意任务的发布或视觉验收。
+

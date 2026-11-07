@@ -27,26 +27,42 @@ def digest(path):
 
 
 def agent_verifier_receipt(result, command, stage):
-    """最后一次要求的验收须成功，且开始于最后一次源码修改完成之后。"""
+    """最后启动的验收须成功，且其后没有源码修改尝试或未结束的修改。"""
     starts = {}
+    pending_mutations = set()
     last_mutation = last_check_start = -1
     last_check_passed, successes = False, 0
     for index, event in enumerate((result or {}).get('events', [])):
         kind = event.get('type')
         if kind == 'tool_execution_start':
-            starts[event.get('toolCallId')] = (index, event.get('args') or {})
-        elif kind == 'tool_execution_end':
-            start, arguments = starts.get(event.get('toolCallId'), (-1, {}))
-            name = event.get('toolName')
+            call_id, name, arguments = event.get('toolCallId'), event.get('toolName'), event.get('args') or {}
+            starts[call_id] = (index, arguments, name)
             path = arguments.get('path')
-            if (name in ('write', 'edit') and not event.get('isError')
-                    and isinstance(path, str) and path.lower().endswith('.py')):
+            if name in ('write', 'edit') and isinstance(path, str) and path.lower().endswith('.py'):
+                pending_mutations.add(call_id)
                 last_mutation = index
-            if name != 'bash' or (arguments.get('command') or '').strip() != command.strip():
+            if name == 'bash' and (arguments.get('command') or '').strip() == command.strip():
+                last_check_start, last_check_passed = index, False
+        elif kind == 'tool_execution_end':
+            call_id = event.get('toolCallId')
+            start, arguments, name = starts.pop(call_id, (-1, {}, None))
+            if name != event.get('toolName'):
                 continue
-            last_check_start, last_check_passed = start, False
+            if call_id in pending_mutations:
+                pending_mutations.remove(call_id)
+                # 失败写入也可能留下部分改动，必须在尝试结束后重新验收。
+                last_mutation = index
+            if name != 'bash' or start != last_check_start:
+                continue
             output = event.get('result')
             if event.get('isError') or not isinstance(output, dict):
+                continue
+            details = output.get('details') or {}
+            if not isinstance(details, dict):
+                continue
+            job = details.get('async')
+            if (details.get('exitCode', 0) != 0 or details.get('timedOut')
+                    or (job is not None and (not isinstance(job, dict) or job.get('state') != 'completed'))):
                 continue
             text = '\n'.join(part.get('text', '') for part in output.get('content', []) if part.get('type') == 'text')
             try:
@@ -55,7 +71,8 @@ def agent_verifier_receipt(result, command, stage):
                 continue
             last_check_passed = isinstance(receipt, dict) and receipt.get('stage') == stage and receipt.get('passed') is True
             successes += int(last_check_passed)
-    return {'passed': last_check_passed and last_check_start > last_mutation, 'successful_receipts': successes}
+    return {'passed': last_check_passed and last_check_start > last_mutation and not pending_mutations,
+            'successful_receipts': successes}
 
 
 def verify(workspace, stage, output=None, deadline=None):

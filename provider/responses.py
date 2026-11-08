@@ -183,6 +183,8 @@ def responses_input_to_genai_messages(input_value: Any, instructions: Any = None
                 "tool_call_id": item["call_id"],
                 "content": normalize_content(item.get("output")),
                 "is_error": bool(item.get("is_error", False)),
+                "details": item.get("details"),
+                "error": item.get("error"),
             }]))
         elif item_type == "reasoning":
             continue

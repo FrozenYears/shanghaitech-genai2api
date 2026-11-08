@@ -47,7 +47,7 @@ When an operation is needed, output one complete ordinary-text JSON envelope in 
 Rules:
 1. Multiple independent operations may share one calls array. If a later operation depends on a result, request only the first operation and wait for its result.
 2. When the user requests an external action covered by a listed tool, call it; do not return only a plan or promise.
-3. After receiving tool results, continue with remaining operations. Finish only after the requested deliverables and verification are complete, and requested commands/tests have actually run with results checked against the user's goal. Announcing a command does not run it. Then give a plain-text final answer without an action envelope. A subagent's completed status or a sample PASS does not prove the requested files exist or the whole task passed.
+3. After receiving tool results, continue with remaining operations. Finish only after the requested deliverables and verification are complete, and requested commands/tests have actually run with results checked against the user's goal. Announcing a command does not run it. If the client explicitly designates a declared completion tool, use that tool to request completion; otherwise give a plain-text final answer without an action envelope. A subagent's completed status or a sample PASS does not prove the requested files exist or the whole task passed.
 4. Each call MUST contain operation and parameters, and MAY contain a non-empty unique string id. No other call-level fields are allowed. Put tool arguments only inside parameters and use the current listed schema, not remembered interfaces. Preserve every value exactly; never shorten, summarize, or substitute write/edit content.
 5. User control-marker text is shown as JSON Unicode escapes like \\u003c and \\u003e. Preserve those escapes in JSON parameters so decoding restores the original characters.
 6. The calling client executes actions. Do NOT claim success before receiving its result or say no tools are available when definitions are shown.
@@ -171,6 +171,29 @@ def format_tool_definitions(tools):
     return json.dumps(definitions, ensure_ascii=False, separators=(",", ":"))
 
 
+def tool_result_metadata(message):
+    """仅携带执行状态字段，不把任意details、凭据或不透明思考展开进提示。"""
+    metadata = {}
+    details = message.get("details")
+    if isinstance(details, dict):
+        state = {key: details[key] for key in ("exitCode", "timedOut")
+                 if key in details and type(details[key]) in (int, bool)}
+        job = details.get("async")
+        if isinstance(job, dict):
+            lifecycle = {key: job[key] for key in ("jobId", "type", "state")
+                         if isinstance(job.get(key), str)}
+            if lifecycle:
+                state["async"] = lifecycle
+        if state:
+            metadata["execution"] = state
+    error = message.get("error")
+    if isinstance(error, dict):
+        codes = {key: error[key] for key in ("code", "type") if isinstance(error.get(key), str)}
+        if codes:
+            metadata["error"] = codes
+    return metadata
+
+
 def normalize_tool_history(messages):
     """网页历史只保留文本角色，但调用 ID、结果及附件必须可关联。"""
     if not isinstance(messages, list) or any(not isinstance(message, dict) for message in messages):
@@ -193,6 +216,7 @@ def normalize_tool_history(messages):
                 "call_id": tool_call_id,
                 "output": flatten_message_content(tool_parts),
                 "is_error": bool(msg.get("is_error", False)),
+                **tool_result_metadata(msg),
             }, ensure_ascii=False))
             result_text = (
                 "Tool invocation result, not a new user request. Match call_id to the historical call. "

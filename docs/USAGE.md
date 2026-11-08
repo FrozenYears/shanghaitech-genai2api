@@ -1,4 +1,4 @@
-# omp 任务监督器
+# 任务客户端与 omp 监督器
 
 基础配置已放回主 README：
 
@@ -7,7 +7,32 @@
 - [图片、文档、搜索与思考](../README.md#图片文档搜索与思考)
 - [已知限制](../README.md#已知限制)
 
-本页保留可选的 omp 验收与自动反馈用法。所有命令从第一跳仓库根目录运行。
+本页保留显式任务客户端及可选omp验收/反馈用法。所有命令从第一跳仓库根目录运行。普通API客户端不会被自动接管。
+
+## 显式任务客户端试点
+
+仅主动使用本入口的任务启用行动/完成申请/阻塞握手。普通Chat/Messages/Responses的`auto`问答不变，也不改变双跳工具执行权。
+
+```bash
+pixi run python -B -m tools.task_run \
+  --base-url http://127.0.0.1:31110 --model Kimi-k3 \
+  --env-file genai2agent-relay/.env \
+  --workspace D:/work/project --task-file D:/trusted/task.txt \
+  --verify-argv-file D:/trusted/checker-argv.json \
+  --allow-python --max-requests 30 --max-seconds 900 \
+  --output D:/audit/new-task-result.json
+```
+
+路径须替换为真实绝对路径，工作区预先存在，输出须为工作区外的新文件。`--env-file`显式读取relay密钥，不改变全局环境；默认先取环境中的`RELAY_API_KEY`，也可用`--api-key-env`指定变量名。学校令牌不交给客户端。验收配置是固定argv字符串数组，直接`.py`验收脚本必须是工作区外的绝对路径；退出0且执行完整才通过，stdout里的PASS不算证据。
+
+- 本地工具为`read_file/write_file/list_files`；`--allow-python`才开放`run_python`执行工作区`.py`，不运行任意shell。路径拒绝越界/链接、读与列举最多1MiB，Python进程最长120秒且受剩余总时限约束，过滤常见凭据环境，输出有界。**Python仍有当前账户权限，不是OS沙箱**，可信checker也不能靠路径约束抵御任意恶意脚本；只在可信任务目录使用。
+- 模型每轮可提出一个独立动作批次；先严格整批校验再执行。`task_complete`与`task_blocked`必须独占批次，不能与普通动作混用。正文和独立思考即时流式输出，不代表任务结束。
+- `task_complete`只是申请：客户端运行独立验收，失败把真实缺口回传，成功才`completed/passed=true`。`task_blocked`为模型报告阻塞，返回`blocked/passed=false/model_reported=true`，不是已验证的外部故障或新增权限。
+- 固定请求/总时间预算，不自动重放网络失败、截断、半调用或执行结果未知的动作。取消/到期不再启动工具或宣告完成；同步execute/checker不能被客户端强制抢占，HTTP等待最迟受当前15秒读超时限制（DNS除外）。无跨进程自动恢复或服务端任务存储。
+- 输出JSON包含完整本次history与执行状态，可能含任务文件内容，需私有保存，不要提交原始记录。普通文本终答没有握手不能让任务通过；持续无有效操作仍会耗尽预算，不能承诺任意任务无限成功。
+
+Python接入接口为`TaskClient(...).run(goal, tools, execute, verify, ...)`；已有客户端可接自己的工具执行与可信验收，不必使用内置文件adapter。它目前是独立试点入口，不宣称omp/Claude Code/Codex已自动获得相同机制。实际实验、初版失败与适用边界见[空转试点记录](STALL_EXPERIMENTS_2026-11-08.md)。
+
 
 
 ## 可选的 omp 任务监督

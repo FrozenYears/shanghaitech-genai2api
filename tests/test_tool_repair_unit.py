@@ -368,3 +368,17 @@ def test_exhausted_shared_deadline_prevents_any_next_generation(monkeypatch, fir
     events = list(genai.iter_genai_stream("question", [], "model", 1000, config, recover_empty=True, tools=TOOLS))
     assert events[-1]["code"] == "upstream_request_timeout"
     assert requested == [True]
+
+
+@pytest.mark.parametrize('protocol', ['chat', 'messages', 'responses'])
+@pytest.mark.parametrize('stream', [False, True])
+def test_standalone_calls_parameter_is_rejected_and_regenerated(monkeypatch, protocol, stream):
+    broken = '<parameter name="calls">' + json.dumps([
+        {'operation': 'write', 'parameters': {'path': 'wrong.txt', 'content': 'never-deliver'}},
+    ]) + '</parameter>'
+    seen, _ = patch_generations(monkeypatch, [generation(content=broken), generation(content=action(PARAMETERS))])
+    path, body = request_body(protocol, stream)
+    response = create_app(Config(Token(), 0, None, False)).test_client().post(path, json=body)
+    assert calls_from(response, protocol, stream) == [PARAMETERS]
+    assert len(seen) == 2
+    assert 'never-deliver' not in response.get_data(as_text=True)

@@ -182,13 +182,15 @@ def run(args):
     command_prefix = f'"{PYTHON.as_posix()}" -B "{Path(__file__).as_posix()}" verify{extended_flag} --workspace "{workspace.as_posix()}" --stage '
     planned_stages = STAGES + (EXTENDED_STAGES if args.extended else [])
     summary = {'model': args.model, 'client': 'omp', 'relay': args.relay_base_url, 'extended_workload': args.extended,
-               'planned_stages': args.stages, 'workspace': str(workspace), 'started_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'stages': [], 'completed': False}
+               'planned_stages': args.stages, 'allow_project_scripts': args.allow_project_scripts,
+               'workspace': str(workspace), 'started_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'stages': [], 'completed': False}
     started = time.monotonic()
     client = None
     emit({'started': args.model, 'client': 'omp', 'artifact_dir': str(run_dir)})
     try:
         client = OmpClient(workspace, run_dir, args.model, command_pattern=command_prefix + '*',
-                           relay_base_url=args.relay_base_url, agent_dir=args.agent_dir)
+                           relay_base_url=args.relay_base_url, agent_dir=args.agent_dir,
+                           allow_project_scripts=args.allow_project_scripts)
         summary['identity'] = client.assert_model()
         for index, (name, task) in enumerate(planned_stages[:args.stages], 1):
             remaining = args.max_minutes * 60 - (time.monotonic() - started)
@@ -199,7 +201,10 @@ def run(args):
             stage_dir.mkdir()
             command = command_prefix + str(index)
             prompt = (BASE.replace('Read/Write/Edit/Glob/Grep', 'read/write/edit/glob/grep').replace('Bash', 'bash') + '\n' if index == 1 else '')
-            prompt += f'阶段 {index}: {name}\n{task}\n只在当前工作目录修改，保持fixed_fixture.txt字节不变。先用glob/grep/read确认已有实现，再修改。唯一获准bash命令如下，必须真实运行并据结果修复，成功后结束：\n' + command
+            prompt += f'阶段 {index}: {name}\n{task}\n只在当前工作目录修改，保持fixed_fixture.txt字节不变。先用glob/grep/read确认已有实现，再修改。必须真实运行如下bash验收命令并据结果修复，成功后结束：\n' + command
+            if args.allow_project_scripts:
+                prompt += (f'\n另获准执行当前工作区内Python脚本，调用格式固定为："{PYTHON.as_posix()}" -B "./脚本名.py"。'
+                           '可用于计算真实摘要；不允许-c、复合shell、网络或工作区外数据访问，不得修改验收器或fixture。')
             record = {'stage': index, 'name': name, 'attempts': []}
             summary['stages'].append(record)
             def progress(state):
@@ -276,6 +281,8 @@ def main():
         execute.add_argument('--extended', action='store_true', help='启用额外10个复杂阶段；不改变默认20阶段')
         execute.add_argument('--relay-base-url', default='http://127.0.0.1:31110')
         execute.add_argument('--agent-dir', type=Path, help='隔离的omp模型配置目录，不写用户全局配置')
+        if name == 'run':
+            execute.add_argument('--allow-project-scripts', action='store_true', help='显式授权当前工作区相对Python脚本；非OS沙箱')
         execute.add_argument('--max-minutes', type=positive, default=45)
         execute.add_argument('--stage-timeout', type=positive, default=1200)
         execute.add_argument('--max-feedback', type=feedback_budget, default=8)

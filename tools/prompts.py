@@ -7,7 +7,8 @@ from tools.contracts import strict_json_loads
 
 
 _TOOL_CONTROL_MARKER_RE = re.compile(
-    r"@@(?:END_)?ACTION@@|</?(?:think|tool_calls?|tool_result|tool_call_id|tool_\d+|arg_key|arg_value)\b[^>]*>|<[|｜][^>]*>",
+    r"@@(?:END_)?ACTION@@|</?(?:think|tool_calls?|tool_result|tool_call_id|tool_\d+|arg_key|arg_value)\b[^>]*>|<[|｜][^>]*>"
+    r'|<parameter name="calls">',
     re.IGNORECASE,
 )
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import queue
 import subprocess
 import threading
+import sys
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -23,7 +24,7 @@ class FatalClientError(RuntimeError):
 
 class OmpClient:
     def __init__(self, workspace, artifact_dir, model, command_pattern=None, *,
-                 relay_base_url='http://127.0.0.1:31110', agent_dir=None):
+                 relay_base_url='http://127.0.0.1:31110', agent_dir=None, allow_project_scripts=False):
         self.model = model
         self.workspace = workspace
         self.artifact_dir = artifact_dir
@@ -49,9 +50,13 @@ class OmpClient:
                 '--session-dir', str(artifact_dir / 'sessions'), '--cwd', str(workspace), '--config', str(OVERLAY)]
         if command_pattern:
             policy = artifact_dir / 'tool-policy.yml'
-            policy.write_text(json.dumps({'bash': {'allowCompoundCommands': False, 'patterns': [
-                {'match': command_pattern, 'approval': 'allow'}, {'match': '*', 'approval': 'deny'}
-            ]}}, ensure_ascii=False), encoding='utf-8')
+            patterns = [{'match': command_pattern, 'approval': 'allow'}]
+            if allow_project_scripts:
+                # 显式授权后才允许当前目录相对Python脚本；这不是文件系统沙箱。
+                patterns.append({'match': f'"{Path(sys.executable).as_posix()}" -B "./*.py"', 'approval': 'allow'})
+            patterns.append({'match': '*', 'approval': 'deny'})
+            policy.write_text(json.dumps({'bash': {'allowCompoundCommands': False, 'patterns': patterns}},
+                                         ensure_ascii=False), encoding='utf-8')
             args += ['--config', str(policy)]
         env = dict(os.environ)
         for name in ('PI_SMOL_MODEL', 'PI_SLOW_MODEL', 'PI_PLAN_MODEL', 'OMP_PROFILE', 'PI_PROFILE'):

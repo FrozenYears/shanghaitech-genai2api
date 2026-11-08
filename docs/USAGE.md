@@ -46,6 +46,18 @@ pixi run python -B validation/native-first-endurance/run.py run --model Kimi-k3 
 
 验收回执还须满足执行与时序条件：Bash 结果的非零 `details.exitCode`、`timedOut` 或未成功结束的 `details.async.state` 均不能被正文中的 `passed:true` 覆盖。只采用最后启动的指定验收，旧验收晚到不会覆盖新失败；源码写入/编辑尝试（包括失败尝试）结束后须重新验收，有未结束的源码修改时不能通过。这些规则只约束此 runner 的工作流证据，不是对任意任务的发布或视觉验收。
 
+### 可选30阶段与隔离模型配置
+
+```bash
+pixi run python -B validation/native-first-endurance/run.py run --model Kimi-k3 --extended --stages 30 --max-feedback 8 --max-minutes 120 --stage-timeout 1200
+```
+
+将`--model`改为`deepseek-pro`可执行同一套任务。最后阶段累计303次独立业务子进程请求，另检查模块边界、受保护fixture、交付清单及模型实际验收命令回执；不要求为凑数量反复读取文件。此命令建立全新工作区和会话，不自动恢复旧阶段。
+
+第30阶段需要真实计算文件摘要。若操作者授权工作区Python脚本，可加`--allow-project-scripts`，允许当前解释器执行`"./脚本名.py"`（命令形如`"绝对Python路径" -B "./generate_manifest.py"`）；仍禁止复合shell且保留固定验收命令。默认不开放。Python脚本具备当前账户权限，不是OS沙箱；不能因为使用相对路径就承诺文件隔离。此权限变更须在实测结果中记录，不能与旧只验收命令条件混算。
+
+可选`--relay-base-url http://127.0.0.1:端口 --agent-dir 可信模型配置目录`连接隔离候选服务。配置目录须已有`models.yml`或`models.yaml`，模型provider仍须为`GenAI`且ID一致；只修改子进程`PI_CODING_AGENT_DIR`，不更改用户全局配置，启动禁用父目录context文件。人工复制源码后在新会话补做剩余阶段必须单列，不能与从头30阶段连续结果混算。
+
 ### 2026-11-08 扩展长测与平台可用性记录
 
 本轮实时目录核对确认 `Kimi-k3` 的展示名为 `Kimi K3.1 Pro`，不是 model ID 变更；`deepseek-pro` 仍为 `DeepSeek-V4.1-Flash`，两者解析的 `rootAiType` 均为 `xinference`。间隔约18分钟后，DeepSeek 最小探针返回 HTTP 200/`READY`，Kimi 仍返回 HTTP 502，错误为 `no_available_workers`，上游明确指向 `kimi-api` worker 池及熔断/不健康状态。公开目录没有提供 worker 诊断，因此不能把它归因于客户端 ID 或代理路由。

@@ -24,7 +24,7 @@ ACTION_CLOSE_MARKER = "@@END_ACTION@@"
 TOOL_CALL_OPEN_MARKERS = (
     ACTION_OPEN_MARKER, "<|open|>", "<tool_call", "<tool_",
     DSML_OPEN_PREFIX_FULLWIDTH, DSML_OPEN_PREFIX_ASCII,
-    "@@ACTION@", ACTION_CLOSE_MARKER,
+    "@@ACTION@", ACTION_CLOSE_MARKER, '<parameter name="calls">',
 )
 INLINE_CODE_RE = re.compile(r"(?<!`)(?P<ticks>`+)(?!`)[^\n]*?(?<!`)(?P=ticks)(?!`)")
 CODE_QUOTE_RE = re.compile(
@@ -286,6 +286,12 @@ def extract_tool_calls(content, allowed_tool_names=None):
         return None, content
     prefix, body = content[:start], content[start:].strip()
     try:
+        if body.startswith('<parameter name="calls">'):
+            raise ToolCallParseError("Standalone calls parameter is not an action envelope", feedback=(
+                '不要使用独立的<parameter name="calls">外壳。输出普通文本@@ACTION@@，'
+                '内部是{"calls":[{"operation":"工具名","parameters":{}}]}，再以@@END_ACTION@@结束。'
+                '错误批次未交付或执行，请按原工具Schema重新生成，不要模拟结果。'
+            ))
         if body.startswith("@@"):
             calls = _action(body, allowed_tool_names)
         elif body.startswith("<|open|>"):

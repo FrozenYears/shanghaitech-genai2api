@@ -157,3 +157,11 @@ def test_ambiguous_short_prefixes_remain_literal_text(text):
     calls, remaining = extract_tool_calls(text, {"read"})
     assert calls is None
     assert remaining == text
+
+
+@pytest.mark.parametrize('fence', ['`', '```text\n'])
+def test_standalone_parameter_documentation_is_not_an_action(fence):
+    closing = '`' if fence == '`' else '\n```'
+    text = fence + '<parameter name="calls">[{"operation":"read","parameters":{}}]</parameter>' + closing
+    calls, remaining = extract_tool_calls(text, {'read'})
+    assert calls is None and remaining == text

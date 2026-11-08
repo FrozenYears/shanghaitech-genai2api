@@ -235,6 +235,7 @@ def run(args):
                            '可用于计算真实摘要；不允许-c、复合shell、网络或工作区外数据访问，不得修改验收器或fixture。')
             record = {'stage': index, 'name': name, 'attempts': []}
             summary['stages'].append(record)
+            stage_events = []
             def progress(state):
                 record.update(state)
                 (run_dir / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -248,8 +249,10 @@ def run(args):
                           'automatic_feedback_count': state['automatic_feedback_count'],
                           'stagnation_count': state['stagnation_count'], 'stop_reason': state['stop_reason']})
             def check_stage(seconds):
+                # 反馈回合不是新阶段；已执行的有效验收不能因后续纯终答而丢失。
+                stage_events.extend((client.last_result or {}).get('events', []))
                 check = verify(workspace, index, deadline=time.monotonic() + seconds, extended=args.extended)
-                receipt = agent_verifier_receipt(client.last_result, command, index)
+                receipt = agent_verifier_receipt({'events': stage_events}, command, index)
                 check.update(business_passed=check['passed'], business_assertions=check['assertions'],
                              agent_verifier=receipt, assertions=check['assertions'] + 1)
                 if not receipt['passed']:

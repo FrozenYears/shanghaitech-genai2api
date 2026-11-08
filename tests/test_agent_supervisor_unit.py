@@ -540,3 +540,16 @@ def test_background_verifier_requires_linked_trusted_completion(job_id, status, 
     assert endurance.agent_verifier_receipt(turn(events=events + [notice]), 'approved verifier', 1)['passed'] is passed
     assert not endurance.agent_verifier_receipt(turn(events=events + source_edit_events() + [notice]),
                                                'approved verifier', 1)['passed']
+
+
+def test_checker_json_transport_is_utf8_independent_of_windows_locale(tmp_path, monkeypatch):
+    monkeypatch.setenv('PYTHONUTF8', '0')
+    monkeypatch.setenv('PYTHONIOENCODING', 'gbk')
+    text = '\ufeffid,amount\n雪,1.25\n'
+    code = ('import json,sys; data=json.load(sys.stdin); '
+            'assert data["text"].startswith(chr(0xfeff)); '
+            'print(json.dumps(data,ensure_ascii=False))')
+    result = supervisor.run_checker([sys.executable, '-B', '-c', code], tmp_path,
+                                    input_text=json.dumps({'text': text}, ensure_ascii=False))
+    assert result['passed'], result
+    assert json.loads(result['stdout']) == {'text': text}

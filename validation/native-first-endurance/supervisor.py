@@ -252,6 +252,9 @@ _SECRET_NAME = re.compile(r'TOKEN|API.?KEY|PASSWORD|PASSWD|SECRET|CREDENTIAL|AUT
 def checker_environment():
     env = {k: v for k, v in os.environ.items() if not _SECRET_NAME.search(k)}
     env['PYTHONDONTWRITEBYTECODE'] = '1'
+    # 输入按UTF-8编码、输出也按UTF-8解码，不能继承Windows终端的GBK管道设置。
+    env['PYTHONUTF8'] = '1'
+    env['PYTHONIOENCODING'] = 'utf-8'
     return env
 
 

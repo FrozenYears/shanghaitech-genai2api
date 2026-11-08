@@ -48,6 +48,8 @@ pixi run python -B validation/native-first-endurance/run.py run --model Kimi-k3 
 
 后台化验收不按“已开始”通过：runner只接受与原获准Bash调用jobId一致的可信单任务`async-result`完成通知，核对成功状态及对应阶段JSON；错误任务、失败或模型自述不作回执。RPC的`prompt_result(sessionSettled=false)`也不是完成，客户端保留该终态，待`session_settled`后再次查询真实会话状态，确认身份与停稳才结束。
 
+验收管道固定UTF-8：`run_checker`向子进程写UTF-8 JSON并按UTF-8读取输出，同时只在子进程设置`PYTHONUTF8=1`、`PYTHONIOENCODING=utf-8`，不继承Windows终端的GBK配置。本轮曾出现模型命令检查通过、命名服务内独立检查把BOM读坏的假失败；已通过相同源码/相同用例的环境对照复现并修复。该失败不计为模型业务回归，受影响续测材料单列保留。
+
 ### 可选30阶段与隔离模型配置
 
 ```bash

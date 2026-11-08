@@ -170,7 +170,8 @@ def iter_genai_stream(chat_info, history_messages, model, max_tokens, config, to
     yield from heartbeat_events(source, timeout=timeout)
 
 
-def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token, upstream_options, control):
+def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, token, upstream_options, control,
+                       auth_refreshed=False):
     if control.cancelled.is_set():
         return
     token = token or config.token_manager.get_token()
@@ -215,9 +216,10 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
         if not control.attach(response):
             return
 
-        if response.status_code == 401:
+        if response.status_code == 401 and not auth_refreshed:
+            auth_refreshed = True
             new_token = config.token_manager.force_refresh()
-            if control.cancelled.is_set():
+            if control.cancelled.is_set() or control.remaining() == 0:
                 return
             if new_token:
                 logger.info("Token refreshed after 401, retrying request")
@@ -234,7 +236,7 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
         if response.status_code != 200:
             logger.warning("GenAI API error %d: %s", response.status_code, response.text[:500])
             if response.status_code == 401:
-                yield {"type": "error", "message": "Upstream authentication failed"}
+                yield {"type": "error", "message": "Upstream authentication failed", "code": "upstream_authentication_failed"}
             elif response.status_code == 429:
                 yield {"type": "error", "message": "Upstream rate limit exceeded"}
             else:
@@ -247,6 +249,7 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
         stream_ended = False
         native_calls = {}
         native_error = None
+        output_seen = False
         for line in response.iter_lines(chunk_size=1):
             if control.cancelled.is_set():
                 return
@@ -284,6 +287,21 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
 
             if isinstance(genai_json, dict) and genai_json.get("success") is False:
                 err_msg = genai_json.get("message", "Unknown upstream error")
+                if err_msg == "Token失效，请重新登录":
+                    if not auth_refreshed and not output_seen:
+                        new_token = config.token_manager.force_refresh()
+                        if control.cancelled.is_set() or control.remaining() == 0:
+                            return
+                        if new_token:
+                            # 仅认证明确拒绝且尚无模型输出时重送，沿用同一个取消与deadline。
+                            response.close()
+                            response = None
+                            yield from _iter_genai_stream(chat_info, history_messages, model, max_tokens, config,
+                                                          new_token, upstream_options, control, auth_refreshed=True)
+                            return
+                    yield {"type": "error", "message": "Upstream authentication failed",
+                           "code": "upstream_authentication_failed"}
+                    return
                 logger.warning("GenAI business error: %s", err_msg)
                 yield {"type": "error", "message": f"Upstream error: {err_msg}"}
                 return
@@ -304,6 +322,9 @@ def _iter_genai_stream(chat_info, history_messages, model, max_tokens, config, t
                 continue
             delta = choices[0].get("delta") or {}
             fragments = delta.get("tool_calls") or []
+            # 包括尚未交付的原生片段；生成开始后遇到认证错误不再刷新或重放。
+            output_seen = output_seen or bool(delta.get("content") or delta.get("reasoning_content")
+                                               or delta.get("reasoning") or fragments)
             if not isinstance(fragments, list):
                 native_error = "Native tool calls must be an array"
                 fragments = []

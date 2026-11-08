@@ -30,9 +30,18 @@ def digest(path):
 def agent_verifier_receipt(result, command, stage):
     """最后启动的验收须成功，且其后没有源码修改尝试或未结束的修改。"""
     starts = {}
+    background_checks = {}
     pending_mutations = set()
     last_mutation = last_check_start = -1
     last_check_passed, successes = False, 0
+
+    def successful_json(text):
+        try:
+            receipt, _ = json.JSONDecoder().raw_decode(text.lstrip())
+        except ValueError:
+            return False
+        return isinstance(receipt, dict) and receipt.get('stage') == stage and receipt.get('passed') is True
+
     for index, event in enumerate((result or {}).get('events', [])):
         kind = event.get('type')
         if kind == 'tool_execution_start':
@@ -63,15 +72,34 @@ def agent_verifier_receipt(result, command, stage):
             if not isinstance(details, dict):
                 continue
             job = details.get('async')
+            if (isinstance(job, dict) and job.get('state') == 'running'
+                    and job.get('type') == 'bash' and isinstance(job.get('jobId'), str)):
+                background_checks[job['jobId']] = start
             if (details.get('exitCode', 0) != 0 or details.get('timedOut')
                     or (job is not None and (not isinstance(job, dict) or job.get('state') != 'completed'))):
                 continue
             text = '\n'.join(part.get('text', '') for part in output.get('content', []) if part.get('type') == 'text')
-            try:
-                receipt, _ = json.JSONDecoder().raw_decode(text.lstrip())
-            except ValueError:
+            last_check_passed = successful_json(text)
+            successes += int(last_check_passed)
+        elif kind == 'message_end':
+            message = event.get('message') or {}
+            if message.get('role') != 'custom' or message.get('customType') != 'async-result':
                 continue
-            last_check_passed = isinstance(receipt, dict) and receipt.get('stage') == stage and receipt.get('passed') is True
+            jobs = (message.get('details') or {}).get('jobs')
+            content = message.get('content')
+            # 只接收单任务可信通知，按之前的真实Bash回执jobId关联，不解析模型自报。
+            if not isinstance(jobs, list) or len(jobs) != 1 or not isinstance(content, str):
+                continue
+            job = jobs[0]
+            if not isinstance(job, dict) or job.get('type') != 'bash':
+                continue
+            start = background_checks.pop(job.get('jobId'), None)
+            if start is None or start != last_check_start:
+                continue
+            prefix = '<system-notice>\nBackground job ' + job['jobId'] + ' ('
+            separator = 'has completed. Resume your work using the result below.\n'
+            last_check_passed = (job.get('status') == 'completed' and content.startswith(prefix)
+                                 and separator in content and successful_json(content.split(separator, 1)[1]))
             successes += int(last_check_passed)
     return {'passed': last_check_passed and last_check_start > last_mutation and not pending_mutations,
             'successful_receipts': successes}

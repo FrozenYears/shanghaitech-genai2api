@@ -262,6 +262,29 @@ def test_abort_ack_alone_is_not_settled_and_next_prompt_is_refused():
     assert client.sent == ['prompt', 'abort']
 
 
+def test_prompt_terminal_before_separate_settled_event_can_finish():
+    client = fake_rpc([
+        {'type': 'prompt_result', 'id': 'turn-1', 'status': 'completed', 'sessionSettled': False},
+        {'type': 'session_settled'},
+    ])
+    result = client.prompt('work', timeout=2)
+    assert result['completion']['status'] == 'completed'
+    assert result['completion']['sessionSettled'] is True
+    assert client.sent == ['prompt'] and not client.unusable
+
+
+def test_separate_settled_event_still_requires_current_session_identity():
+    client = fake_rpc([
+        {'type': 'prompt_result', 'id': 'turn-1', 'status': 'completed', 'sessionSettled': False},
+        {'type': 'session_settled'},
+    ])
+    checks = iter([{'isSettled': True}, {'isSettled': False}])
+    client.assert_model = lambda timeout=60: next(checks)
+    with pytest.raises(omp_client.FatalClientError) as exc:
+        client.prompt('work', timeout=2)
+    assert exc.value.reason == 'session_not_settled'
+
+
 @pytest.mark.parametrize('event,reason', [({'type': 'process_eof'}, 'process_exit'),
                                         ({'type': 'model_changed'}, 'identity_failure'),
                                         ({'type': 'retry_fallback_applied'}, 'identity_failure')])
@@ -495,3 +518,25 @@ def test_deliverable_edit_after_verifier_requires_new_receipt(path):
     edit[0]['args']['path'] = path
     events = verifier_receipt_events() + edit
     assert not endurance.agent_verifier_receipt(turn(events=events), 'approved verifier', 1)['passed']
+
+
+@pytest.mark.parametrize('job_id,status,role,passed', [
+    ('bg-check', 'completed', 'custom', True),
+    ('another-job', 'completed', 'custom', False),
+    ('bg-check', 'failed', 'custom', False),
+    ('bg-check', 'completed', 'assistant', False),
+])
+def test_background_verifier_requires_linked_trusted_completion(job_id, status, role, passed):
+    events = verifier_receipt_events()
+    events[1]['result'] = {'content': [{'type': 'text', 'text': 'Backgrounded as job bg-check'}],
+                           'details': {'async': {'state': 'running', 'jobId': 'bg-check', 'type': 'bash'}}}
+    notice = {'type': 'message_end', 'message': {
+        'role': role, 'customType': 'async-result',
+        'details': {'jobs': [{'jobId': job_id, 'type': 'bash', 'status': status}]},
+        'content': '<system-notice>\nBackground job bg-check (approved verifier) has completed. Resume your work using the result below.\n'
+                   '{"stage":1,"passed":true}\nWall time: 70 seconds\n</system-notice>',
+    }}
+    assert not endurance.agent_verifier_receipt(turn(events=events), 'approved verifier', 1)['passed']
+    assert endurance.agent_verifier_receipt(turn(events=events + [notice]), 'approved verifier', 1)['passed'] is passed
+    assert not endurance.agent_verifier_receipt(turn(events=events + source_edit_events() + [notice]),
+                                               'approved verifier', 1)['passed']

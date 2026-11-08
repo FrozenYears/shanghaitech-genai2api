@@ -209,6 +209,7 @@ class OmpClient:
         events = []
         first_stream = None
         first_visible = None
+        terminal = None
 
         def result(completion, after):
             self.last_result = {'elapsed_s': round(time.monotonic() - started, 3),
@@ -232,18 +233,18 @@ class OmpClient:
                     if delta.get('type') == 'text_delta' and first_visible is None:
                         first_visible = now
                 if event.get('type') == 'prompt_result' and event.get('id') == id_:
-                    if not event.get('sessionSettled'):
-                        continue
+                    terminal = event
+                if terminal is not None and (terminal.get('sessionSettled') is True
+                                             or event.get('type') == 'session_settled'):
                     after = self.assert_model(timeout=max(.01, min(60, deadline - time.monotonic())))
                     if after.get('isSettled') is not True:
                         raise FatalClientError('Terminal result but session is not settled', 'session_not_settled')
-                    return result(event, after)
+                    return result({**terminal, 'sessionSettled': True}, after)
                 if event.get('type') == 'response' and event.get('id') == id_ and not event.get('success'):
                     raise FatalClientError('Prompt rejected: ' + str(event.get('error')), 'prompt_rejected')
         except TimeoutError:
             # abort 的 response 不是停稳证明；必须收到本轮终结并核对真实状态。
             settle_deadline = time.monotonic() + 30
-            terminal = None
             try:
                 self.send('abort')
                 while time.monotonic() < settle_deadline:

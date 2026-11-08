@@ -46,6 +46,8 @@ pixi run python -B validation/native-first-endurance/run.py run --model Kimi-k3 
 
 验收回执还须满足执行与时序条件：Bash 结果的非零 `details.exitCode`、`timedOut` 或未成功结束的 `details.async.state` 均不能被正文中的 `passed:true` 覆盖。只采用最后启动的指定验收，旧验收晚到不会覆盖新失败；源码写入/编辑尝试（包括失败尝试）结束后须重新验收，有未结束的源码修改时不能通过。这些规则只约束此 runner 的工作流证据，不是对任意任务的发布或视觉验收。
 
+后台化验收不按“已开始”通过：runner只接受与原获准Bash调用jobId一致的可信单任务`async-result`完成通知，核对成功状态及对应阶段JSON；错误任务、失败或模型自述不作回执。RPC的`prompt_result(sessionSettled=false)`也不是完成，客户端保留该终态，待`session_settled`后再次查询真实会话状态，确认身份与停稳才结束。
+
 ### 可选30阶段与隔离模型配置
 
 ```bash

@@ -30,6 +30,7 @@ pixi run python -B -m tools.task_run \
 - `task_complete`只是申请：客户端运行独立验收，失败把真实缺口回传，成功才`completed/passed=true`。`task_blocked`为模型报告阻塞，返回`blocked/passed=false/model_reported=true`，不是已验证的外部故障或新增权限。
 - 固定请求/总时间预算，不自动重放网络失败、截断、半调用或执行结果未知的动作。取消/到期不再启动工具或宣告完成；同步execute/checker不能被客户端强制抢占，HTTP等待最迟受当前15秒读超时限制（DNS除外）。无跨进程自动恢复或服务端任务存储。
 - 输出JSON包含完整本次history与执行状态，可能含任务文件内容，需私有保存，不要提交原始记录。普通文本终答没有握手不能让任务通过；持续无有效操作仍会耗尽预算，不能承诺任意任务无限成功。
+- 流在工具参数中途断开或缺少完整终态时，保留已接收正文，但分片不进入可再次发送的`history.tool_calls`，也不执行。调用方可自行检查现场后携带该历史重新发起任务；这不是自动恢复或重放，完整调用已交付但执行结果未知时仍需先核对副作用。
 
 Python接入接口为`TaskClient(...).run(goal, tools, execute, verify, ...)`；已有客户端可接自己的工具执行与可信验收，不必使用内置文件adapter。它目前是独立试点入口，不宣称omp/Claude Code/Codex已自动获得相同机制。实际实验、初版失败与适用边界见[空转试点记录](STALL_EXPERIMENTS_2026-11-08.md)。
 

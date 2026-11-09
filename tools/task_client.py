@@ -340,7 +340,6 @@ class TaskClient:
                 call = calls.setdefault(index, {"id": None, "type": "function", "function": {
                     "name": "", "arguments": "",
                 }})
-                assistant["tool_calls"] = list(calls.values())
                 if "type" in fragment and fragment["type"] != "function":
                     raise _StreamError("Invalid tool call type")
                 if "id" in fragment:

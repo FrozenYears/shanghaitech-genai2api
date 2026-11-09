@@ -200,6 +200,34 @@ def test_truncated_network_or_invalid_stream_never_executes_or_replays(script, t
     assert len(requests) == 1
     assert not path.exists()
 
+@pytest.mark.parametrize("terminated", [False, True])
+def test_interrupted_tool_arguments_do_not_poison_continuation_history(tmp_path, terminated):
+    from tools.prompts import inject_tool_prompt
+
+    path = tmp_path / "result.txt"
+    fragment = {"index": 0, "id": "partial-write", "type": "function", "function": {
+        "name": "write_file", "arguments": '{"content":"unfinished',
+    }}
+    script = [delta(content="已收到进度，但工具尚未收齐"), delta(calls=[fragment])]
+    if terminated:
+        script += [delta(finish="tool_calls")]
+    with backend([script]) as (url, requests):
+        failed = TaskClient(url, "key", "model").run(
+            "写入文件", TOOLS, file_executor(path), file_checker(path))
+    assert failed["status"] == "error"
+    assert not path.exists()
+    assert failed["history"][-1]["content"] == "已收到进度，但工具尚未收齐"
+    # 下一次真实第一跳组包不能再把未交付的半调用当成历史操作。
+    inject_tool_prompt(failed["history"], TOOLS)
+    with backend([response("write_file", {"content": "验收通过\n"}, "fresh-write"),
+                  response("task_complete", {"summary": "已核验"}, "fresh-complete")]) as (url, requests):
+        resumed = TaskClient(url, "key", "model").run(
+            "完成文件", TOOLS, file_executor(path), file_checker(path), messages=failed["history"])
+    assert resumed["passed"] is True
+    assert path.read_text(encoding="utf-8") == "验收通过\n"
+    assert [item["id"] for item in resumed["executions"]] == ["fresh-write"]
+
+
 
 def test_only_prose_and_bare_json_exhaust_without_fake_tool_results(tmp_path):
     path = tmp_path / "result.txt"
